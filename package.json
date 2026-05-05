@@ -7,7 +7,8 @@
     "watch:remote": "bitburner-filesync",
     "watch:init": "node build/init.js",
     "watch:all": "concurrently npm:watch:transpile npm:watch:local npm:watch:remote",
-    "watch": "npm run watch:init && npm run watch:all"
+    "push": "npm run watch:init && npm run watch:all",
+    "pull": "node pull.js"
   },
   "author": "hydroflame, Hoekstraa, based on work by SlyCedix",
   "devDependencies": {
@@ -22,5 +23,8 @@
     "fast-glob": "^3.2.12",
     "sync-directory": "^5.1.7",
     "typescript": "^4.7.4"
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
   }
 }
