@@ -45,7 +45,7 @@ export async function main(ns) {
   }
 
   function deployHackFarmOnHome() {
-    const hackScript = "hack.js";
+    const hackScript = "early-hack-template.js";
     if (!ns.fileExists(hackScript, controlServer)) return;
 
     const scriptRam = ns.getScriptRam(hackScript);
@@ -67,7 +67,7 @@ export async function main(ns) {
     // Don't spawn if already running
     if (runningThreads > 0) return;
 
-    // Use 60% of total RAM for hack.js threads (aggressive)
+    // Use 60% of total RAM for early-hack-template threads (aggressive)
     const maxThreads = Math.floor(aggressiveAllocation / scriptRam);
     if (maxThreads > 0) {
       // Auto-select best target
@@ -95,7 +95,7 @@ export async function main(ns) {
   }
 
   function deployToHackedServers() {
-    const scriptsToDeploy = ["aggressive-hack.js", "hack.js"];
+    const scriptsToDeploy = ["early-hack-template.js"];
     // Ensure we have the primary script locally first
     if (!ns.fileExists(scriptsToDeploy[0], controlServer)) return;
 
@@ -116,34 +116,19 @@ export async function main(ns) {
       const freeRam = maxRam - usedRam;
       if (freeRam < 2) continue;
 
-      // Copy scripts (scp returns true/false)
+      // Copy script(s) to the server
       ns.scp(scriptsToDeploy, server);
 
       const remoteProcs = ns.ps(server).map((p) => p.filename);
 
-      // Prefer aggressive-hack (coordinator) if available and not already running
-      if (
-        !remoteProcs.includes("aggressive-hack.js") &&
-        ns.fileExists("aggressive-hack.js", server)
-      ) {
-        try {
-          ns.exec("aggressive-hack.js", server, 1);
-          ns.print(`Deployed aggressive-hack.js -> ${server}`);
-        } catch {}
-        continue;
-      }
-
-      // Otherwise, run hack.js to use spare RAM (will farm from that remote server)
-      if (
-        !remoteProcs.includes("hack.js") &&
-        ns.fileExists("hack.js", server)
-      ) {
-        const ramPer = ns.getScriptRam("hack.js");
+      // If template not already running, start it to fill available RAM
+      if (!remoteProcs.includes("early-hack-template.js") && ns.fileExists("early-hack-template.js", server)) {
+        const ramPer = ns.getScriptRam("early-hack-template.js");
         const threads = Math.floor(freeRam / ramPer);
         if (threads > 0) {
           try {
-            ns.exec("hack.js", server, threads);
-            ns.print(`Started hack.js ${threads} threads on ${server}`);
+            ns.exec("early-hack-template.js", server, threads);
+            ns.print(`Started early-hack-template.js ${threads} threads on ${server}`);
           } catch {}
         }
       }

@@ -3,7 +3,9 @@ export async function main(ns) {
   const baseRam = 8;
   const serverLimit = ns.cloud.getServerLimit();
   const maxRam = ns.cloud.getRamLimit();
-  const hackScript = "hack.js";
+  // Cap maximum RAM to 16384GB even if cloud allows more
+  const capRam = Math.min(maxRam, 16384);
+  const hackScript = "early-hack-template.js";
   const sleepTime = 5000; // 5 second check interval
 
   function canAfford(cost) {
@@ -16,23 +18,23 @@ export async function main(ns) {
 
   function getNextServerName(ram, servers) {
     let index = 1;
-    // *** CHANGE: Added safety check to prevent infinite loop ***
-    const maxIterations = 10000;
+    // Safety check to prevent infinite loop when many servers exist
+    const maxIterations = 16384;
     let iterations = 0;
-    
+
     // Support both Array (has includes) and Set (has has)
     const hasName = (name) =>
       typeof servers.has === "function"
         ? servers.has(name)
         : servers.includes(name);
-    
+
     while (iterations < maxIterations) {
       const name = `Server-${ram}GB-${index}`;
       if (!hasName(name)) return name;
       index++;
       iterations++;
     }
-    
+
     // Fallback if we somehow hit max iterations
     return `Server-${ram}GB-${Date.now()}`;
   }
@@ -69,34 +71,26 @@ export async function main(ns) {
     return smallest;
   }
 
-  // *** CHANGE: Updated deployHack to use aggressive-hack if enough RAM, else hack.js ***
+  // Deploy the early-hack template and maximize threads to fill server RAM
   async function deployHack(server) {
     const maxRamAvailable = ns.getServerMaxRam(server);
-    const hackRam = ns.getScriptRam("hack.js");
-    const aggressiveRam = ns.getScriptRam("aggressive-hack.js");
-
-    let scriptToUse = "hack.js"; // Default fallback
-    let maxThreads = Math.max(1, Math.floor(maxRamAvailable / hackRam));
-
-    // *** CHANGE: Try aggressive-hack first if it exists and there's enough RAM ***
-    if (
-      ns.fileExists("aggressive-hack.js", "home") &&
-      maxRamAvailable >= aggressiveRam * 2
-    ) {
-      // Need at least 2x the script RAM for aggressive-hack to be worthwhile
-      scriptToUse = "aggressive-hack.js";
-      maxThreads = Math.max(1, Math.floor(maxRamAvailable / aggressiveRam));
+    const scriptToUse = "early-hack-template.js";
+    if (!ns.fileExists(scriptToUse, "home")) {
+      ns.print(`✗ ${scriptToUse} not found on home`);
+      return;
     }
 
-    // Copy and execute the chosen script
-    if (ns.fileExists(scriptToUse, "home")) {
+    const scriptRam = ns.getScriptRam(scriptToUse);
+    const maxThreads = Math.max(1, Math.floor(maxRamAvailable / scriptRam));
+
+    try {
       await ns.scp(scriptToUse, server);
       ns.exec(scriptToUse, server, maxThreads);
       ns.print(
         `✓ Deployed ${scriptToUse} (${maxThreads} threads) to ${server}`,
       );
-    } else {
-      ns.print(`✗ ${scriptToUse} not found on home`);
+    } catch (e) {
+      ns.print(`Error deploying ${scriptToUse} to ${server}: ${e}`);
     }
   }
 
@@ -125,12 +119,13 @@ export async function main(ns) {
     const smallest = getSmallestServer(servers);
     const smallestRam = ns.getServerMaxRam(smallest);
 
-    if (smallestRam >= maxRam) {
-      ns.tprint("All cloud servers are at max RAM. Stopping.");
+    // Stop upgrading if smallest server is already at or above the capped RAM
+    if (smallestRam >= capRam) {
+      ns.tprint("All cloud servers are at capped RAM (16384GB). Stopping.");
       return;
     }
 
-    const newRam = Math.min(maxRam, smallestRam * 2);
+    const newRam = Math.min(capRam, smallestRam * 2);
     const upgradeCost = ns.cloud.getServerCost(newRam);
     if (upgradeCost === Infinity || !canAfford(upgradeCost)) {
       await ns.sleep(sleepTime);
