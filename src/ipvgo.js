@@ -19,6 +19,12 @@ export async function main(ns) {
   let DEBUG = false;
   let DEBUG_CANDIDATES = false;
   let LOG_TURNS = false;
+  let LOG_ENABLE = false;
+
+  // Function to determine if logging is enabled
+  function isLoggingEnabled() {
+    return LOG_ENABLE || DEBUG || DEBUG_CANDIDATES || LOG_TURNS;
+  }
 
   // ===== TRANSPOSITION TABLE =====
   const transpositionCache = {};
@@ -1300,6 +1306,7 @@ export async function main(ns) {
     const bestMoves = nonOccupying.length > 0 ? nonOccupying : [];
 
     function printCandidates(list, label) {
+      if (!isLoggingEnabled()) return;
       for (const candidate of list.slice(0, adaptiveHeuristicMoveLimit)) {
         ns.print(
           `${label} Candidate (${candidate.row},${candidate.col}) => score=${candidate.score.toFixed(0)} areaOrig=${areaOrig} areaSim=${candidate.areaSim ?? "N/A"} deltaFriendly=${candidate.deltaFriendly ?? 0} enemyRisk=${candidate.enemyCaptureRisk ?? 0} captured=${candidate.captured}`,
@@ -1461,13 +1468,17 @@ export async function main(ns) {
         )
         .join(" -> ");
 
-      ns.tprint(
-        `LOSS #${gameCount}: moves=${turnCount}, score=${blackScore}-${whiteScore}, states=${history.length}, history=${historyLine}, final=${toBoardState(ns.go.getBoardState()).join("|")}`,
-      );
+      if (isLoggingEnabled()) {
+        ns.tprint(
+          `LOSS #${gameCount}: moves=${turnCount}, score=${blackScore}-${whiteScore}, states=${history.length}, history=${historyLine}, final=${toBoardState(ns.go.getBoardState()).join("|")}`,
+        );
+      }
     } catch (error) {
-      ns.tprint(
-        `LOSS #${gameCount}: transcript error: ${formatError(error).substring(0, 30)}`,
-      );
+      if (isLoggingEnabled()) {
+        ns.tprint(
+          `LOSS #${gameCount}: transcript error: ${formatError(error).substring(0, 30)}`,
+        );
+      }
     }
   }
 
@@ -1916,9 +1927,11 @@ export async function main(ns) {
   }
 
   ns.clearLog();
-  ns.print("=== IPvGO 5x5 SOLVER ===");
-  ns.print("Strategy: tactical search + exact late-game solve");
-  ns.print("");
+  if (isLoggingEnabled()) {
+    ns.print("=== IPvGO 5x5 SOLVER ===");
+    ns.print("Strategy: tactical search + exact late-game solve");
+    ns.print("");
+  }
 
   let turnCount = 0;
   let gameCount = 0;
@@ -1933,7 +1946,8 @@ export async function main(ns) {
       if (currentState.currentPlayer === "None") {
         const board = getBoard();
         if (board.length !== BOARD_SIZE) {
-          ns.print(`Board is ${board.length}x${board.length}, skipping.`);
+          if (isLoggingEnabled())
+            ns.print(`Board is ${board.length}x${board.length}, skipping.`);
           await ns.sleep(UPDATE_INTERVAL_MS);
           continue;
         }
@@ -1943,7 +1957,7 @@ export async function main(ns) {
         gameCount++;
         const enemy = ns.go.getOpponent() ?? "Netburners";
         ns.go.resetBoardState(enemy, BOARD_SIZE);
-        if (DEBUG)
+        if (isLoggingEnabled())
           ns.print(`[Game ${gameCount}] Resetting board against ${enemy}.`);
         await ns.sleep(UPDATE_INTERVAL_MS);
         continue;
@@ -1951,7 +1965,7 @@ export async function main(ns) {
 
       const board = getBoard();
       if (board.length !== BOARD_SIZE) {
-        if (DEBUG) {
+        if (isLoggingEnabled()) {
           ns.print(
             `Board size ${board.length}x${board.length} != ${BOARD_SIZE}x${BOARD_SIZE}, passing.`,
           );

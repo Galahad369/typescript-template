@@ -1,7 +1,7 @@
 /** @param {NS} ns */
 export async function main(ns) {
   const delayTime = 1000; // Hardcoded 1 second delay
-  const bufferMultiplier = 1.2; // Keep 20% extra cash before buying
+  const bufferMultiplier = 2; // Keep 20% extra cash before buying
 
   while (true) {
     let ownedNodes = ns.hacknet.numNodes();

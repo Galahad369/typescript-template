@@ -76,6 +76,7 @@ export async function main(ns) {
     const securityThresh = ns.getServerMinSecurityLevel(target);
 
     // Run the template logic against the selected target until it stops being attractive
+    let innerFailed = false;
     while (true) {
       // Re-evaluate target conditions occasionally
       try {
@@ -91,6 +92,7 @@ export async function main(ns) {
       } catch (e) {
         // If something goes wrong (server unreachable), break and pick a new target
         ns.print(`Error working on ${target}: ${e}`);
+        innerFailed = true;
         break;
       }
 
@@ -103,5 +105,7 @@ export async function main(ns) {
         break;
       }
     }
+    // Prevent tight spin if inner loop failed quickly
+    if (innerFailed) await ns.sleep(1000);
   }
 }

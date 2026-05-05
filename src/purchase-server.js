@@ -81,7 +81,14 @@ export async function main(ns) {
     }
 
     const scriptRam = ns.getScriptRam(scriptToUse);
-    const maxThreads = Math.max(1, Math.floor(maxRamAvailable / scriptRam));
+    const maxThreads = Math.floor(maxRamAvailable / scriptRam);
+
+    if (maxThreads <= 0) {
+      ns.print(
+        `✗ Not enough RAM on ${server} to run ${scriptToUse} (${scriptRam}GB required).`,
+      );
+      return;
+    }
 
     try {
       await ns.scp(scriptToUse, server);

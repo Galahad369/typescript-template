@@ -45,36 +45,56 @@ export async function main(ns) {
   }
 
   function deployHackFarmOnHome() {
-    const hackScript = "smart-early-hack.js";
-    if (!ns.fileExists(hackScript, controlServer)) return;
-
-    const scriptRam = ns.getScriptRam(hackScript);
-    const runningHacks = ns
-      .ps(controlServer)
-      .filter((p) => p.filename === hackScript);
-    const runningThreads = runningHacks.reduce(
-      (total, p) => total + p.threads,
-      0,
-    );
-
-    // Aggressively use 60% of total home RAM for hack.js + stock.js + priority tasks
     const totalRam = ns.getServerMaxRam(controlServer);
     const usedRam = ns.getServerUsedRam(controlServer);
-    const aggressiveAllocation = totalRam * 0.6;
 
-    if (aggressiveAllocation < scriptRam) return;
+    // Split 60% allocation: 30% for early-hack-template, 30% for smart-early-hack
+    const allocation30Pct = totalRam * 0.3;
 
-    // Don't spawn if already running
-    if (runningThreads > 0) return;
-
-    // Use 60% of total RAM for smart-early-hack threads (aggressive)
-    const maxThreads = Math.floor(aggressiveAllocation / scriptRam);
-    if (maxThreads > 0) {
-      // Auto-select best target
-      ns.exec(hackScript, controlServer, maxThreads);
-      ns.print(
-        `✓ Hack farm on home: ${maxThreads} threads (${ns.format.number(aggressiveAllocation, "0.00")}GB / 60% of total RAM)`,
+    // Deploy early-hack-template.js with 30%
+    const earlyHackScript = "early-hack-template.js";
+    if (ns.fileExists(earlyHackScript, controlServer)) {
+      const earlyHackRam = ns.getScriptRam(earlyHackScript);
+      const runningEarlyHacks = ns
+        .ps(controlServer)
+        .filter((p) => p.filename === earlyHackScript);
+      const runningEarlyThreads = runningEarlyHacks.reduce(
+        (total, p) => total + p.threads,
+        0,
       );
+
+      if (runningEarlyThreads === 0 && allocation30Pct >= earlyHackRam) {
+        const maxThreads = Math.floor(allocation30Pct / earlyHackRam);
+        if (maxThreads > 0) {
+          ns.exec(earlyHackScript, controlServer, maxThreads);
+          ns.print(
+            `✓ Early hack farm on home: ${maxThreads} threads (${ns.format.number(allocation30Pct, "0.00")}GB / 30% of total RAM)`,
+          );
+        }
+      }
+    }
+
+    // Deploy smart-early-hack.js with 30%
+    const smartScript = "smart-early-hack.js";
+    if (ns.fileExists(smartScript, controlServer)) {
+      const smartRam = ns.getScriptRam(smartScript);
+      const runningSmartHacks = ns
+        .ps(controlServer)
+        .filter((p) => p.filename === smartScript);
+      const runningSmartThreads = runningSmartHacks.reduce(
+        (total, p) => total + p.threads,
+        0,
+      );
+
+      if (runningSmartThreads === 0 && allocation30Pct >= smartRam) {
+        const maxThreads = Math.floor(allocation30Pct / smartRam);
+        if (maxThreads > 0) {
+          ns.exec(smartScript, controlServer, maxThreads);
+          ns.print(
+            `✓ Smart early hack farm on home: ${maxThreads} threads (${ns.format.number(allocation30Pct, "0.00")}GB / 30% of total RAM)`,
+          );
+        }
+      }
     }
   }
 
