@@ -5,7 +5,7 @@ export async function main(ns) {
   const maxRam = ns.cloud.getRamLimit();
   // Cap maximum RAM to 16384GB even if cloud allows more
   const capRam = Math.min(maxRam, 16384);
-  const hackScript = "early-hack-template.js";
+  const hackScript = "smart-early-hack.js";
   const sleepTime = 5000; // 5 second check interval
 
   function canAfford(cost) {
@@ -74,7 +74,7 @@ export async function main(ns) {
   // Deploy the early-hack template and maximize threads to fill server RAM
   async function deployHack(server) {
     const maxRamAvailable = ns.getServerMaxRam(server);
-    const scriptToUse = "early-hack-template.js";
+    const scriptToUse = "smart-early-hack.js";
     if (!ns.fileExists(scriptToUse, "home")) {
       ns.print(`✗ ${scriptToUse} not found on home`);
       return;

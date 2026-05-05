@@ -1,6 +1,6 @@
 /** @param {NS} ns */
 export async function main(ns) {
-  const updateInterval = 60000; // Update rankings every 60 seconds
+  const updateInterval = 6000; // Update rankings every 6 seconds
 
   function getAllServers() {
     const visited = new Set();
@@ -65,10 +65,19 @@ export async function main(ns) {
 
   while (true) {
     const ranked = rankServers();
-
     ns.print("=== SERVER PROFILER ===");
     ns.print(`${ranked.length} hackable servers found`);
     ns.print("");
+
+    if (ranked.length === 0) {
+      ns.print("No hackable targets found yet!");
+      ns.print("=======================");
+      ns.print("");
+      await ns.sleep(updateInterval);
+      continue;
+    }
+
+    // Print a compact table for every ranked server (descending by $/sec)
     ns.print(
       "RANK | SERVER               | $/SEC            | MAX $        | HACK TIME",
     );
@@ -76,7 +85,7 @@ export async function main(ns) {
       "-----+----------------------+------------------+--------------+----------",
     );
 
-    for (let i = 0; i < Math.min(10, ranked.length); i++) {
+    for (let i = 0; i < ranked.length; i++) {
       const s = ranked[i];
       const rank = (i + 1).toString().padEnd(4);
       const name = s.server.padEnd(20);
@@ -86,29 +95,6 @@ export async function main(ns) {
       ns.print(`${rank} | ${name} | ${profitSec} | ${money} | ${time}`);
     }
 
-    ns.print("");
-    ns.print("=== RECOMMENDATIONS ===");
-    if (ranked.length > 0) {
-      const best = ranked[0];
-      ns.print(`PRIMARY TARGET: ${best.server}`);
-      ns.print(
-        `  Profit: ${ns.format.number(best.moneyPerSec, "0.00a")}/sec (${ns.format.number(best.maxMoney, "0.00a")} per hack)`,
-      );
-      ns.print(`  Hack Time: ${formatTime(best.hackTime)}`);
-      ns.print(
-        `  Security: ${best.curSec.toFixed(1)}/${best.minSec.toFixed(1)}`,
-      );
-
-      if (ranked.length > 1) {
-        const second = ranked[1];
-        ns.print(`SECONDARY TARGET: ${second.server}`);
-        ns.print(
-          `  Profit: ${ns.format.number(second.moneyPerSec, "0.00a")}/sec`,
-        );
-      }
-    } else {
-      ns.print("No hackable targets found yet!");
-    }
     ns.print("=======================");
     ns.print("");
 

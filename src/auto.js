@@ -45,7 +45,7 @@ export async function main(ns) {
   }
 
   function deployHackFarmOnHome() {
-    const hackScript = "early-hack-template.js";
+    const hackScript = "smart-early-hack.js";
     if (!ns.fileExists(hackScript, controlServer)) return;
 
     const scriptRam = ns.getScriptRam(hackScript);
@@ -67,7 +67,7 @@ export async function main(ns) {
     // Don't spawn if already running
     if (runningThreads > 0) return;
 
-    // Use 60% of total RAM for early-hack-template threads (aggressive)
+    // Use 60% of total RAM for smart-early-hack threads (aggressive)
     const maxThreads = Math.floor(aggressiveAllocation / scriptRam);
     if (maxThreads > 0) {
       // Auto-select best target
@@ -95,7 +95,7 @@ export async function main(ns) {
   }
 
   function deployToHackedServers() {
-    const scriptsToDeploy = ["early-hack-template.js"];
+    const scriptsToDeploy = ["smart-early-hack.js"];
     // Ensure we have the primary script locally first
     if (!ns.fileExists(scriptsToDeploy[0], controlServer)) return;
 
@@ -121,14 +121,19 @@ export async function main(ns) {
 
       const remoteProcs = ns.ps(server).map((p) => p.filename);
 
-      // If template not already running, start it to fill available RAM
-      if (!remoteProcs.includes("early-hack-template.js") && ns.fileExists("early-hack-template.js", server)) {
-        const ramPer = ns.getScriptRam("early-hack-template.js");
+      // If smart script not already running, start it to fill available RAM
+      if (
+        !remoteProcs.includes("smart-early-hack.js") &&
+        ns.fileExists("smart-early-hack.js", server)
+      ) {
+        const ramPer = ns.getScriptRam("smart-early-hack.js");
         const threads = Math.floor(freeRam / ramPer);
         if (threads > 0) {
           try {
-            ns.exec("early-hack-template.js", server, threads);
-            ns.print(`Started early-hack-template.js ${threads} threads on ${server}`);
+            ns.exec("smart-early-hack.js", server, threads);
+            ns.print(
+              `Started smart-early-hack.js ${threads} threads on ${server}`,
+            );
           } catch {}
         }
       }
@@ -198,18 +203,28 @@ export async function main(ns) {
     }
 
     // purchaseProgram requires Source-File 4 (powerup). Guard the calls so the script doesn't throw.
-    const canPurchasePrograms = hasSourceFile(4) && ns.singularity && typeof ns.singularity.purchaseProgram === "function";
+    const canPurchasePrograms =
+      hasSourceFile(4) &&
+      ns.singularity &&
+      typeof ns.singularity.purchaseProgram === "function";
 
     for (const prog of programs) {
-      if (!ns.fileExists(prog.name, controlServer) && ns.getPlayer().money >= prog.cost) {
+      if (
+        !ns.fileExists(prog.name, controlServer) &&
+        ns.getPlayer().money >= prog.cost
+      ) {
         if (!canPurchasePrograms) {
           // Log a short hint once and skip attempting purchase
-          if (DEBUG) ns.print(`Skipping purchase of ${prog.name}: requires Source-File 4 (not owned) or Singularity API unavailable.`);
+          if (DEBUG)
+            ns.print(
+              `Skipping purchase of ${prog.name}: requires Source-File 4 (not owned) or Singularity API unavailable.`,
+            );
           continue;
         }
 
         try {
-          if (ns.singularity.purchaseProgram(prog.name)) ns.print(`✓ Purchased ${prog.name}`);
+          if (ns.singularity.purchaseProgram(prog.name))
+            ns.print(`✓ Purchased ${prog.name}`);
         } catch (e) {
           ns.print(`Could not purchase ${prog.name}: ${e}`);
         }
