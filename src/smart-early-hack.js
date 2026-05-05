@@ -71,6 +71,13 @@ export async function main(ns) {
       // nuke may fail if not enough ports; continue and the loop will re-evaluate
     }
 
+    // Check if root access was successful; if not, skip this target
+    if (!ns.hasRootAccess(target)) {
+      ns.print(`No root access to ${target}, skipping.`);
+      await ns.sleep(1000);
+      continue;
+    }
+
     // Use the same thresholds as the template so behavior is familiar
     const moneyThresh = ns.getServerMaxMoney(target);
     const securityThresh = ns.getServerMinSecurityLevel(target);
@@ -80,6 +87,12 @@ export async function main(ns) {
     while (true) {
       // Re-evaluate target conditions occasionally
       try {
+        // Double-check root access before each action
+        if (!ns.hasRootAccess(target)) {
+          ns.print(`Lost root access to ${target}, switching target.`);
+          innerFailed = true;
+          break;
+        }
         if (ns.getServerSecurityLevel(target) > securityThresh) {
           await ns.weaken(target);
           continue;

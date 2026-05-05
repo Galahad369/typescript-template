@@ -48,10 +48,10 @@ export async function main(ns) {
     const totalRam = ns.getServerMaxRam(controlServer);
     const usedRam = ns.getServerUsedRam(controlServer);
 
-    // Split 60% allocation: 30% for early-hack-template, 30% for smart-early-hack
-    const allocation30Pct = totalRam * 0.3;
+    // Split 80% allocation: 40% for early-hack-template, 40% for smart-early-hack
+    const allocation40Pct = totalRam * 0.4;
 
-    // Deploy early-hack-template.js with 30%
+    // Deploy early-hack-template.js with 40%
     const earlyHackScript = "early-hack-template.js";
     if (ns.fileExists(earlyHackScript, controlServer)) {
       const earlyHackRam = ns.getScriptRam(earlyHackScript);
@@ -63,18 +63,18 @@ export async function main(ns) {
         0,
       );
 
-      if (runningEarlyThreads === 0 && allocation30Pct >= earlyHackRam) {
-        const maxThreads = Math.floor(allocation30Pct / earlyHackRam);
+      if (runningEarlyThreads === 0 && allocation40Pct >= earlyHackRam) {
+        const maxThreads = Math.floor(allocation40Pct / earlyHackRam);
         if (maxThreads > 0) {
           ns.exec(earlyHackScript, controlServer, maxThreads);
           ns.print(
-            `✓ Early hack farm on home: ${maxThreads} threads (${ns.format.number(allocation30Pct, "0.00")}GB / 30% of total RAM)`,
+            `✓ Early hack farm on home: ${maxThreads} threads (${ns.format.number(allocation40Pct, "0.00")}GB / 40% of total RAM)`,
           );
         }
       }
     }
 
-    // Deploy smart-early-hack.js with 30%
+    // Deploy smart-early-hack.js with 40%
     const smartScript = "smart-early-hack.js";
     if (ns.fileExists(smartScript, controlServer)) {
       const smartRam = ns.getScriptRam(smartScript);
@@ -86,12 +86,12 @@ export async function main(ns) {
         0,
       );
 
-      if (runningSmartThreads === 0 && allocation30Pct >= smartRam) {
-        const maxThreads = Math.floor(allocation30Pct / smartRam);
+      if (runningSmartThreads === 0 && allocation40Pct >= smartRam) {
+        const maxThreads = Math.floor(allocation40Pct / smartRam);
         if (maxThreads > 0) {
           ns.exec(smartScript, controlServer, maxThreads);
           ns.print(
-            `✓ Smart early hack farm on home: ${maxThreads} threads (${ns.format.number(allocation30Pct, "0.00")}GB / 30% of total RAM)`,
+            `✓ Smart early hack farm on home: ${maxThreads} threads (${ns.format.number(allocation40Pct, "0.00")}GB / 40% of total RAM)`,
           );
         }
       }
