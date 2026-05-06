@@ -12,7 +12,15 @@ export async function main(ns) {
   const minCashRatio = 0.2; // keep at least 20% of portfolio as cash
   const dropThreshold = -0.2; // sell 80% if drops 20%
   const riseThreshold = 0.2; // buy more if rises 20%
+  const stopLossImmediate = -0.15; // immediate full exit if loss exceeds 15%
   const tickDuration = 5 * 1000; // ~4s offline, ~6s online (5s compromise)
+  const STRATEGY = ns.args[0] || "aggressive"; // '2080' | 'aggressive' | 'diversify'
+  const baseAllocation = 0.2; // base fraction of available cash to allocate per new stock
+  let portfolioAllocationPerStock = baseAllocation; // may be adapted each loop based on volatility
+  const baseMaxPositions = 6; // base max concurrent long/short positions
+  let maxPositions = baseMaxPositions; // may be adapted each loop based on volatility
+  const aggressivePriceRise = 0.1; // consider scaling/buying if price rose 10%
+  const diversifyCount = 6; // buy top-N stocks when using 'diversify'
   const accessCheckInterval = 60 * 1000; // 1 minute
   let lastAccessCheck = 0;
   const enableShorts = false; // Set to true only if you have BN8 or SF8 lvl 2
@@ -26,7 +34,9 @@ export async function main(ns) {
     // money - cost >= minCashRatio * (money - cost + stocksValue)
     // Rearranged: money >= cost + (minCashRatio / (1 - minCashRatio)) * stocksValue
     const minCashRequired = (minCashRatio / (1 - minCashRatio)) * stocksValue;
-    const canAfford = money >= cost + minCashRequired;
+    // Also account for the commission that will be charged when making the
+    // purchase. Require commission + cost + reserve to be available.
+    const canAfford = money >= cost + commission + minCashRequired;
     return canAfford;
   }
 
@@ -48,11 +58,12 @@ export async function main(ns) {
         bidPrice: ns.stock.getBidPrice(sym),
         maxShares: ns.stock.getMaxShares(sym),
       };
-      const longProfit =
-        stock.longShares * (stock.bidPrice - stock.longPrice) - tradeCommission;
+      // Unrealized profit (do NOT subtract commissions here — commissions
+      // are applied when the trade is executed). Keeping unrealized profit
+      // free of transaction fees prevents double-counting losses each loop.
+      const longProfit = stock.longShares * (stock.bidPrice - stock.longPrice);
       const shortProfit =
-        stock.shortShares * (stock.shortPrice - stock.askPrice) -
-        tradeCommission;
+        stock.shortShares * (stock.shortPrice - stock.askPrice);
       stock.profit = longProfit + shortProfit;
 
       const longCost = stock.longShares * stock.longPrice;
@@ -81,30 +92,40 @@ export async function main(ns) {
     ns.print(
       `INFO\t ${stock.summary} ${label} ${ns.format.number(curValue, "0a")} ${roi}%`,
     );
+    // overallValue reflects current portfolio valuation. Do NOT add
+    // unrealized profit to totalLifetimeProfit here — that would double-
+    // count the same unrealized P/L across iterations.
     overallValue += curValue;
-    totalLifetimeProfit += stock.profit;
   }
 
   function sellLong(stock) {
-    const salePrice = ns.stock.sellStock(stock.sym, stock.longShares);
+    const shares = stock.longShares;
+    if (shares <= 0) return;
+    const salePrice = ns.stock.sellStock(stock.sym, shares);
     if (salePrice <= 0) return;
-    const saleTotal = salePrice * stock.longShares;
-    const saleCost = stock.longPrice * stock.longShares;
-    const saleProfit = saleTotal - saleCost - tradeCommission;
+    const saleTotal = salePrice * shares;
+    const saleCost = stock.longPrice * shares;
+    // Subtract single transaction commission for the sell
+    const saleProfit = saleTotal - saleCost - commission;
+    totalLifetimeProfit += saleProfit;
     ns.print(
-      `WARN\t${stock.summary} SOLD LONG for ${ns.format.number(saleProfit, "0a")} profit`,
+      `WARN\t${stock.summary} SOLD LONG ${ns.format.number(shares, "0a")} for ${ns.format.number(saleProfit, "0a")} profit`,
     );
   }
 
   function sellShort(stock) {
     if (!enableShorts) return;
-    const salePrice = ns.stock.sellShort(stock.sym, stock.shortShares);
+    const shares = stock.shortShares;
+    if (shares <= 0) return;
+    const salePrice = ns.stock.sellShort(stock.sym, shares);
     if (salePrice <= 0) return;
-    const saleTotal = salePrice * stock.shortShares;
-    const saleCost = stock.shortPrice * stock.shortShares;
-    const saleProfit = saleCost - saleTotal - tradeCommission;
+    const saleTotal = salePrice * shares;
+    const saleCost = stock.shortPrice * shares;
+    // For shorts, profit is (entryPrice - salePrice) * shares
+    const saleProfit = saleCost - saleTotal - commission;
+    totalLifetimeProfit += saleProfit;
     ns.print(
-      `WARN\t${stock.summary} SOLD SHORT for ${ns.format.number(saleProfit, "0a")} profit`,
+      `WARN\t${stock.summary} SOLD SHORT ${ns.format.number(shares, "0a")} for ${ns.format.number(saleProfit, "0a")} profit`,
     );
   }
 
@@ -119,14 +140,25 @@ export async function main(ns) {
         const currentPrice = stock.bidPrice;
         const priceChangePercent = (currentPrice - entryPrice) / entryPrice;
 
+        // Immediate full exit for severe loss before partial 80% rule
+        if (priceChangePercent <= stopLossImmediate) {
+          ns.print(
+            `STOP_IMMEDIATE\t${stock.summary} dropped ${(priceChangePercent * 100).toFixed(2)}% - SELLING ALL to limit loss`,
+          );
+          sellLong(stock);
+          continue;
+        }
+
         if (priceChangePercent <= dropThreshold) {
           // Dropped 20%+ → SELL 80% to cut losses
           const sharesToSell = Math.floor(stock.longShares * 0.8);
           if (sharesToSell > 0) {
             const salePrice = ns.stock.sellStock(stock.sym, sharesToSell);
             if (salePrice > 0) {
-              const saleProfit =
-                sharesToSell * (salePrice - entryPrice) - tradeCommission;
+              const saleTotal = salePrice * sharesToSell;
+              const saleCost = entryPrice * sharesToSell;
+              const saleProfit = saleTotal - saleCost - commission;
+              totalLifetimeProfit += saleProfit;
               ns.print(
                 `SELL_80%\t${stock.summary} dropped ${(priceChangePercent * 100).toFixed(1)}% - sold ${sharesToSell} shares (${ns.format.number(saleProfit, "0a")} profit)`,
               );
@@ -141,7 +173,6 @@ export async function main(ns) {
             `HOLD_BUY\t${stock.summary} up ${roi}% - ready to scale in more`,
           );
           overallValue += curValue;
-          totalLifetimeProfit += stock.profit;
         } else {
           // Between -20% and +20% → HOLD
           const curValue = stock.longShares * currentPrice - commission;
@@ -150,7 +181,6 @@ export async function main(ns) {
             `HOLD\t${stock.summary} at ${roi}% - ${stock.longShares} shares @ ${currentPrice.toFixed(2)}`,
           );
           overallValue += curValue;
-          totalLifetimeProfit += stock.profit;
         }
       }
       if (stock.shortShares > 0) {
@@ -159,14 +189,25 @@ export async function main(ns) {
         const currentPrice = stock.askPrice;
         const priceChangePercent = (entryPrice - currentPrice) / entryPrice; // inverted for shorts
 
+        // Immediate full exit for shorts if severe loss
+        if (priceChangePercent <= stopLossImmediate) {
+          ns.print(
+            `STOP_IMMEDIATE_SHORT\t${stock.summary} moved ${(priceChangePercent * 100).toFixed(2)}% against short - SELLING ALL to limit loss`,
+          );
+          sellShort(stock);
+          continue;
+        }
+
         if (priceChangePercent <= dropThreshold) {
           // Rose 20%+ (short position lost) → SELL 80% to cut losses
           const sharesToSell = Math.floor(stock.shortShares * 0.8);
           if (sharesToSell > 0) {
             const salePrice = ns.stock.sellShort(stock.sym, sharesToSell);
             if (salePrice > 0) {
-              const saleProfit =
-                sharesToSell * (entryPrice - salePrice) - tradeCommission;
+              const saleTotal = salePrice * sharesToSell;
+              const saleCost = entryPrice * sharesToSell;
+              const saleProfit = saleCost - saleTotal - commission;
+              totalLifetimeProfit += saleProfit;
               ns.print(
                 `SELL_SHORT_80%\t${stock.summary} rose ${(Math.abs(priceChangePercent) * 100).toFixed(1)}% - sold ${sharesToSell} shares (${ns.format.number(saleProfit, "0a")} profit)`,
               );
@@ -181,7 +222,6 @@ export async function main(ns) {
             `HOLD_SHORT_BUY\t${stock.summary} up ${roi}% - ready to scale in more`,
           );
           overallValue += curValue;
-          totalLifetimeProfit += stock.profit;
         } else {
           // Between -20% and +20% → HOLD
           const curValue = stock.shortShares * currentPrice - commission;
@@ -190,7 +230,6 @@ export async function main(ns) {
             `HOLD_SHORT\t${stock.summary} at ${roi}% - ${stock.shortShares} shares @ ${currentPrice.toFixed(2)}`,
           );
           overallValue += curValue;
-          totalLifetimeProfit += stock.profit;
         }
       }
     }
@@ -236,6 +275,9 @@ export async function main(ns) {
     if (DEBUG)
       ns.print(`DEBUG\tbuyLong: ${stock.sym} buyStock returned ${buyResult}`);
     if (buyResult > 0) {
+      // After a successful buy, clear any 'shouldBuyMore' marker so we don't
+      // repeatedly scale into the same position during this cycle.
+      stock.shouldBuyMore = false;
       ns.print(
         `WARN\t${stock.summary}\t- LONG @ ${ns.format.number(sharesToBuy, "0a")} (price: ${ns.format.number(buyResult, "0.00")})`,
       );
@@ -287,6 +329,7 @@ export async function main(ns) {
     if (DEBUG)
       ns.print(`DEBUG\tbuyShort: ${stock.sym} buyShort returned ${buyResult}`);
     if (buyResult > 0) {
+      stock.shouldBuyMoreShort = false;
       ns.print(
         `WARN\t${stock.summary}\t- SHORT @ ${ns.format.number(sharesToBuy, "0a")} (price: ${ns.format.number(buyResult, "0.00")})`,
       );
@@ -316,7 +359,10 @@ export async function main(ns) {
           ns.print(
             `DEBUG\tyolo: ${stock.sym} SCALING IN - stock up 20%+, buying 80% more shares`,
           );
-        const sharesToAdd = Math.floor(stock.longShares * 0.8);
+        const sharesToAdd = Math.min(
+          Math.floor(stock.longShares * 0.8),
+          Math.max(0, stock.maxShares - stock.longShares),
+        );
         if (sharesToAdd > 0) {
           const scaleCost = ns.stock.getPurchaseCost(
             stock.sym,
@@ -326,6 +372,8 @@ export async function main(ns) {
           if (canAffordPurchase(scaleCost, money, portfolioValue)) {
             const buyResult = ns.stock.buyStock(stock.sym, sharesToAdd);
             if (buyResult > 0) {
+              // Clear the scale marker so we don't repeatedly attempt to add
+              stock.shouldBuyMore = false;
               ns.print(
                 `SCALE_IN\t${stock.summary} - Added ${sharesToAdd} shares @ ${ns.format.number(buyResult, "0.00")} (up 20%+)`,
               );
@@ -334,23 +382,121 @@ export async function main(ns) {
         }
       }
 
-      // NORMAL BUYING: Buy based on forecast if no position yet
-      if (stock.longShares === 0 && stock.forecast >= forecastLong) {
+      // SCALE SHORTS: if we marked a short to buy more (position is winning)
+      if (stock.shouldBuyMoreShort && stock.shortShares > 0) {
         if (DEBUG)
           ns.print(
-            `DEBUG\tyolo: ${stock.sym} QUALIFIES for LONG (${stock.forecast.toFixed(3)} >= ${forecastLong.toFixed(3)})`,
+            `DEBUG\tyolo: ${stock.sym} SCALING IN SHORT - stock down 20%+, buying 80% more shares`,
           );
-        buyLong(stock, money, portfolioValue);
-      } else if (
-        enableShorts &&
-        stock.shortShares === 0 &&
-        stock.forecast <= forecastShort
-      ) {
-        if (DEBUG)
-          ns.print(
-            `DEBUG\tyolo: ${stock.sym} QUALIFIES for SHORT (${stock.forecast.toFixed(3)} <= ${forecastShort.toFixed(3)})`,
+        const sharesToAdd = Math.min(
+          Math.floor(stock.shortShares * 0.8),
+          Math.max(0, stock.maxShares - stock.shortShares),
+        );
+        if (sharesToAdd > 0) {
+          const scaleCost = ns.stock.getPurchaseCost(
+            stock.sym,
+            sharesToAdd,
+            "S",
           );
-        buyShort(stock, money, portfolioValue);
+          if (canAffordPurchase(scaleCost, money, portfolioValue)) {
+            const buyResult = ns.stock.buyShort(stock.sym, sharesToAdd);
+            if (buyResult > 0) {
+              stock.shouldBuyMoreShort = false;
+              ns.print(
+                `SCALE_IN_SHORT\t${stock.summary} - Added ${sharesToAdd} shares @ ${ns.format.number(buyResult, "0.00")} (down 20%)`,
+              );
+            }
+          }
+        }
+      }
+
+      // NORMAL BUYING: strategy-aware
+      const openPositions = stocks.filter(
+        (s) => s.longShares > 0 || s.shortShares > 0,
+      ).length;
+
+      // AGGRESSIVE: buy multiple top signals up to maxPositions, allocate a
+      // fraction of cash per stock.
+      if (STRATEGY === "aggressive") {
+        if (
+          stock.longShares === 0 &&
+          openPositions < maxPositions &&
+          stock.forecast >= forecastLong
+        ) {
+          const allocation = Math.floor(
+            ns.getPlayer().money * portfolioAllocationPerStock,
+          );
+          const sharesAffordable = Math.floor(
+            (allocation - commission) / stock.askPrice,
+          );
+          const sharesToBuy = Math.min(
+            stock.maxShares,
+            Math.max(0, sharesAffordable),
+          );
+          if (sharesToBuy > 0) {
+            const cost = ns.stock.getPurchaseCost(stock.sym, sharesToBuy, "L");
+            if (canAffordPurchase(cost, money, portfolioValue))
+              buyLong(stock, money, portfolioValue);
+          }
+        }
+        if (
+          enableShorts &&
+          stock.shortShares === 0 &&
+          openPositions < maxPositions &&
+          stock.forecast <= forecastShort
+        ) {
+          const allocation = Math.floor(
+            ns.getPlayer().money * portfolioAllocationPerStock,
+          );
+          const sharesAffordable = Math.floor(
+            (allocation - commission) / stock.askPrice,
+          );
+          const sharesToBuy = Math.min(
+            stock.maxShares,
+            Math.max(0, sharesAffordable),
+          );
+          if (sharesToBuy > 0) {
+            const cost = ns.stock.getPurchaseCost(stock.sym, sharesToBuy, "S");
+            if (canAffordPurchase(cost, money, portfolioValue))
+              buyShort(stock, money, portfolioValue);
+          }
+        }
+      } else if (STRATEGY === "diversify") {
+        // Diversify into top-N by profitPotential (stocks are already sorted)
+        const idx = stocks.indexOf(stock);
+        if (
+          stock.longShares === 0 &&
+          idx < diversifyCount &&
+          stock.forecast >= 0.51 &&
+          openPositions < maxPositions
+        ) {
+          const allocation = Math.floor(
+            ns.getPlayer().money * (portfolioAllocationPerStock / 2),
+          );
+          const sharesAffordable = Math.floor(
+            (allocation - commission) / stock.askPrice,
+          );
+          const sharesToBuy = Math.min(
+            stock.maxShares,
+            Math.max(0, sharesAffordable),
+          );
+          if (sharesToBuy > 0) {
+            const cost = ns.stock.getPurchaseCost(stock.sym, sharesToBuy, "L");
+            if (canAffordPurchase(cost, money, portfolioValue))
+              buyLong(stock, money, portfolioValue);
+          }
+        }
+      } else {
+        // Default/2080-compatible: only buy on forecast signal if no position
+        if (stock.longShares === 0 && stock.forecast >= forecastLong) {
+          buyLong(stock, money, portfolioValue);
+        } else if (
+          enableShorts &&
+          stock.shortShares === 0 &&
+          stock.forecast <= forecastShort
+        ) {
+          buyShort(stock, money, portfolioValue);
+        }
       }
     }
   }
@@ -387,6 +533,33 @@ export async function main(ns) {
     }
 
     const stocks = getStonks();
+    // Adapt portfolio allocation and max positions based on market volatility.
+    // Lower volatility -> larger per-stock allocation and more positions.
+    const avgVolatility =
+      stocks.length > 0
+        ? stocks.reduce((s, x) => s + x.volatility, 0) / stocks.length
+        : 0.2;
+    // Compute allocation: baseAllocation scaled by (1 - avgVolatility), clamped
+    portfolioAllocationPerStock = Math.max(
+      0.03,
+      Math.min(0.5, baseAllocation * Math.max(0.3, 1 - avgVolatility)),
+    );
+    // Compute max positions: baseMaxPositions scaled by (1 - avgVolatility)
+    maxPositions = Math.max(
+      2,
+      Math.min(
+        12,
+        Math.round(baseMaxPositions * Math.max(0.4, 1 - avgVolatility)),
+      ),
+    );
+    if (DEBUG)
+      ns.print(
+        `DEBUG\tAdaptive allocation: ${(
+          portfolioAllocationPerStock * 100
+        ).toFixed(
+          1,
+        )}% per stock, maxPositions=${maxPositions}, avgVol=${avgVolatility.toFixed(3)}`,
+      );
     if (DEBUG) ns.print(`DEBUG\tMain loop: fetched ${stocks.length} stocks`);
     takeTendies(stocks);
     yolo(stocks);
