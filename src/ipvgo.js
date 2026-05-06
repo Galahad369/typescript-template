@@ -535,8 +535,10 @@ export async function main(ns) {
           friendlyNeighbors++;
         }
       }
-      // Heavy bonus for staying close to existing stones: 100k per adjacent friendly stone
-      score += friendlyNeighbors * 100000;
+      // Increased bonus during opening (moves 3-8) for stronger defensive consolidation
+      const consolidationBonus =
+        moveCount >= 3 && moveCount <= 8 ? 150000 : 100000;
+      score += friendlyNeighbors * consolidationBonus;
     }
 
     // Keep group structure healthy and avoid moves that allow immediate enemy captures.
@@ -718,7 +720,10 @@ export async function main(ns) {
           friendlyNeighbors++;
         }
       }
-      score += friendlyNeighbors * 80000; // High weight for consolidation in rough scorer
+      // Increased bonus during opening (moves 3-8) for stronger defensive consolidation
+      const consolidationBonus =
+        moveCount >= 3 && moveCount <= 8 ? 120000 : 80000;
+      score += friendlyNeighbors * consolidationBonus;
     }
 
     const territoryOwner = getTerritoryOwner(board, move.row, move.col);
@@ -1098,6 +1103,7 @@ export async function main(ns) {
       legalMoves,
       currentChains,
       currentLiberties,
+      moveCount,
     );
     if (urgentDefenseMove) {
       if (DEBUG)
@@ -1113,6 +1119,7 @@ export async function main(ns) {
       legalMoves,
       currentChains,
       currentLiberties,
+      moveCount,
     );
     if (structuredDefenseMove) {
       if (DEBUG)
@@ -1600,6 +1607,7 @@ export async function main(ns) {
     legalMoves,
     currentChains,
     currentLiberties,
+    moveCount = 0,
   ) {
     const enemy = player === "X" ? "O" : "X";
     const moveByPoint = new Map();
@@ -1670,6 +1678,7 @@ export async function main(ns) {
     legalMoves,
     currentChains,
     currentLiberties,
+    moveCount = 0,
   ) {
     const moveByPoint = new Map();
     for (const move of legalMoves) {
@@ -1687,7 +1696,9 @@ export async function main(ns) {
         seenChainIds.add(chainId);
 
         const libs = currentLiberties[rowIndex][colIndex];
-        if (libs > 2) continue;
+        // In opening (moves 3-8), defend even 3-liberty chains; normally defend 1-2 liberty chains
+        const libsThreshold = moveCount >= 3 && moveCount <= 8 ? 3 : 2;
+        if (libs > libsThreshold) continue;
 
         const group = getGroupAndLiberties(board, rowIndex, colIndex);
         if (group.libsSet.size === 0) continue;
@@ -1716,12 +1727,16 @@ export async function main(ns) {
             }
           }
 
+          // Increase defense weight during opening phase
+          const defenseMultiplier =
+            moveCount >= 3 && moveCount <= 8 ? 1.5 : 1.0;
           const defenseScore =
-            group.points.length * 150000 +
-            libs * 120000 +
-            ownAfter.libs * 80000 +
-            candidateMove.captured * 150000 +
-            friendlyNeighbors * 40000;
+            (group.points.length * 150000 +
+              libs * 120000 +
+              ownAfter.libs * 80000 +
+              candidateMove.captured * 150000 +
+              friendlyNeighbors * 40000) *
+            defenseMultiplier;
 
           if (!best || defenseScore > best.score) {
             best = {
@@ -1915,9 +1930,6 @@ export async function main(ns) {
     return blackScore - whiteScore;
   }
 
-  function getBoard() {
-    return ns.go.getBoardState();
-  }
   // Initialize parameters based on current board (fallback to 5 if unavailable)
   try {
     const b = ns.go.getBoardState();
