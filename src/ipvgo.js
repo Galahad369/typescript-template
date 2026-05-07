@@ -19,7 +19,7 @@ export async function main(ns) {
   let DEBUG = false;
   let DEBUG_CANDIDATES = false;
   let LOG_TURNS = false;
-  let LOG_ENABLE = true;
+  let LOG_ENABLE = false;
   // Minimal margin (points) required before adaptive width expansion triggers
   const LOSS_MARGIN_THRESHOLD = 2.0;
 
@@ -481,6 +481,7 @@ export async function main(ns) {
     friendlyControlOrig,
     weaknessOrig,
     komi,
+    useControlEval = true,
     moveCount = 0,
   ) {
     const enemy = player === "X" ? "O" : "X";
@@ -699,6 +700,24 @@ export async function main(ns) {
     let deltaFriendly = 0;
     let friendlyComponentDelta = 0;
     let finalScoreSim = null;
+    if (!useControlEval) {
+      const centerRow = (board.length - 1) / 2;
+      const centerCol = (board[0].length - 1) / 2;
+      const distanceToCenter =
+        Math.abs(move.row - centerRow) + Math.abs(move.col - centerCol);
+      const centerBonus = moveCount >= 3 && moveCount <= 12 ? 500 : 1000;
+      score += Math.max(0, 4 - distanceToCenter) * centerBonus;
+
+      return {
+        score,
+        areaSim,
+        deltaFriendly,
+        friendlyComponentDelta,
+        enemyCaptureRisk,
+        finalScoreSim,
+      };
+    }
+
     try {
       const simulatedControlled = ns.go.analysis.getControlledEmptyNodes(
         toBoardState(simulatedBoard),
@@ -1132,6 +1151,9 @@ export async function main(ns) {
     const gameState = ns.go.getGameState();
     const komi = typeof gameState?.komi === "number" ? gameState.komi : 1.5;
     const legalMoves = getLegalMoves(board, "X", historyKeys);
+    const emptyCount = countEmptyPlayableCells(board);
+    const useControlEval =
+      BOARD_SIZE <= 5 ? emptyCount <= 10 : emptyCount <= 18 || moveCount >= 10;
     const friendlyControlOrig = origControlled
       ? countControlled(board, origControlled, "X")
       : 0;
@@ -1401,7 +1423,6 @@ export async function main(ns) {
     }
     */
 
-    const emptyCount = countEmptyPlayableCells(board);
     const enemyStoneCount = countCells(board, "O");
 
     // In endgame with few enemy stones, focus on winning calculation instead of deep search
@@ -1491,6 +1512,7 @@ export async function main(ns) {
           friendlyControlOrig,
           weaknessOrig,
           komi,
+          useControlEval,
           turnCount,
         );
         return {
@@ -1646,6 +1668,7 @@ export async function main(ns) {
             friendlyControlOrig,
             weaknessOrig,
             komi,
+            useControlEval,
             turnCount,
           );
           return {

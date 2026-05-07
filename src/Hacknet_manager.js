@@ -2,6 +2,7 @@
 export async function main(ns) {
   const delayTime = 1000; // Hardcoded 1 second delay
   const bufferMultiplier = 2; // Keep 20% extra cash before buying
+  const maxNodes = 30;
 
   while (true) {
     let ownedNodes = ns.hacknet.numNodes();
@@ -11,6 +12,11 @@ export async function main(ns) {
     let minValue = ns.hacknet.getPurchaseNodeCost();
     let nodeIndex = ownedNodes; // The index of the new node if we buy one
     let upgradeType = -1; // -1: Buy Node | 0: Upgrade Level | 1: Upgrade RAM | 2: Upgrade Core
+
+    if (ownedNodes >= maxNodes) {
+      minValue = Infinity;
+      upgradeType = 0;
+    }
 
     // Step 2: Look at every single node we currently own and check upgrade prices.
     for (let i = 0; i < ownedNodes; i++) {

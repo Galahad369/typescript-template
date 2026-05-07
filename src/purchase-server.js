@@ -155,6 +155,7 @@ export async function main(ns) {
     // Stop upgrading if smallest server is already at or above the capped RAM
     if (smallestRam >= capRam) {
       ns.tprint("All cloud servers are at capped RAM (16384GB). Stopping.");
+      await ns.sleep(sleepTime * 100); // Sleep longer since no more upgrades will happen
       return;
     }
 

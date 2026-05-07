@@ -5,7 +5,7 @@ export async function main(ns) {
 
   // Configuration
   const scriptTimer = 2000; // Tick interval (ms)
-  const moneyKeep = 50000000; // Reserve capital failsafe
+  const moneyKeep = 5000000000; // Reserve capital failsafe
   // 100k = 100,000
   // 1M = 1,000,000
   // 1B = 1,000,000,000
