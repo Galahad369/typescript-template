@@ -21,6 +21,13 @@ export async function main(ns) {
   let LOG_TURNS = false;
   let LOG_ENABLE = false;
 
+  // ===== STRATEGIC PARAMETERS (board-size-aware) =====
+  // Pro Go strategy varies by board size: smaller boards prioritize corners/edges,
+  // larger boards balance center territory with influence.
+  let OPENING_END_MOVE; // End of opening phase (moves 0-N)
+  let MIDGAME_END_MOVE; // End of midgame (moves 0-M)
+  let ENDGAME_START_EMPTY_THRESHOLD; // Empty count threshold for endgame
+
   // Function to determine if logging is enabled
   function isLoggingEnabled() {
     return LOG_ENABLE || DEBUG || DEBUG_CANDIDATES || LOG_TURNS;
@@ -60,6 +67,30 @@ export async function main(ns) {
     WEAK_CHAIN_WEIGHT = 80000;
     ATARI_CHAIN_WEIGHT = 250000;
     ENEMY_CAPTURE_RISK_WEIGHT = 220000;
+
+    // ===== STRATEGIC PHASE BREAKPOINTS (pro Go style) =====
+    // Strategy varies by game phase:
+    // - OPENING: Establish safe territory (corners/edges), prevent opponent setup
+    // - MIDGAME: Balance territory consolidation + eye creation + strategic pressure
+    // - ENDGAME: Maximize score (capture opponent area, protect own eyes)
+    if (BOARD_SIZE === 5) {
+      OPENING_END_MOVE = 3; // Very short opening on 5x5 (center + 2 corners)
+      MIDGAME_END_MOVE = 10; // Short midgame
+      ENDGAME_START_EMPTY_THRESHOLD = 8; // Transition to endgame ~40% full
+    } else if (BOARD_SIZE === 7) {
+      OPENING_END_MOVE = 4; // Center + corners
+      MIDGAME_END_MOVE = 14; // Moderate midgame
+      ENDGAME_START_EMPTY_THRESHOLD = 15; // ~30% full
+    } else if (BOARD_SIZE === 9) {
+      OPENING_END_MOVE = 6; // More exploration space
+      MIDGAME_END_MOVE = 18; // Longer midgame for influence fighting
+      ENDGAME_START_EMPTY_THRESHOLD = 20; // ~25% full
+    } else {
+      // 13x13 and larger
+      OPENING_END_MOVE = 8; // Extended opening with fuseki patterns
+      MIDGAME_END_MOVE = 25; // Long midgame for territorial fights
+      ENDGAME_START_EMPTY_THRESHOLD = 30; // ~17% full
+    }
 
     UPDATE_INTERVAL_MS = 60;
 
@@ -548,6 +579,51 @@ export async function main(ns) {
       score += friendlyNeighbors * consolidationBonus;
     }
 
+    // EYE STRATEGY (all game phases): Create own eyes + Block enemy eyes
+    // In Go, 2 eyes = guaranteed life. Use this to secure group survival and threaten enemies.
+    // NOTE: Bonuses are MILD (50k range) to avoid overriding captures, territory, and defense
+    // Eye creation is important but not more important than capturing enemy stones or safe consolidation
+    try {
+      // Mild bonus for creating true eyes (safe territory)
+      if (wouldCreateEye(board, move.row, move.col, player)) {
+        const eyeBonus = moveCount >= 15 ? 20000 : 35000; // Reduced from 300k/200k
+        score += eyeBonus;
+      }
+
+      // Mild bonus for blocking enemy eyes (prevents enemy safety)
+      if (wouldBlockEnemyEye(board, move.row, move.col, player)) {
+        // Especially important if enemy group is vulnerable (0-1 eyes)
+        const enemy = player === "X" ? "O" : "X";
+        let isBlockingVulnerableGroup = false;
+        for (const [nr, nc] of neighbors(move.row, move.col)) {
+          if (inBounds(board, nr, nc) && board[nr][nc] === enemy) {
+            if (countEyesForGroup(board, nr, nc, enemy) <= 1) {
+              isBlockingVulnerableGroup = true;
+              break;
+            }
+          }
+        }
+        const blockBonus = isBlockingVulnerableGroup ? 35000 : 15000; // Reduced from 280k/150k
+        score += blockBonus;
+      }
+
+      // Very light bonus: if our group has 0 eyes, any group-building move is slightly preferred
+      // But this is just a tie-breaker, not a dominant factor
+      if (move.captured === 0) {
+        let friendlyNeighbors = 0;
+        for (const [nr, nc] of neighbors(move.row, move.col)) {
+          if (inBounds(board, nr, nc) && board[nr][nc] === player) {
+            friendlyNeighbors++;
+          }
+        }
+        if (friendlyNeighbors > 0) {
+          score += 5000; // Minimal bonus for adjacent-to-friendly moves
+        }
+      }
+    } catch {
+      // Ignore eye analysis if unavailable
+    }
+
     // Keep group structure healthy and avoid moves that allow immediate enemy captures.
     let enemyCaptureRisk = 0;
     try {
@@ -762,6 +838,19 @@ export async function main(ns) {
       else if (moveCount >= 15) score += 600000;
       else if (moveCount <= 12) score += 500000;
       else score += 250000;
+    }
+
+    // EYE STRATEGY in rough scorer: Mild bonus for eye creation + blocking
+    // Keep bonuses minimal so territory/captures dominate playout decisions
+    try {
+      if (wouldCreateEye(board, move.row, move.col, player)) {
+        score += 15000; // Reduced from 150k
+      }
+      if (wouldBlockEnemyEye(board, move.row, move.col, player)) {
+        score += 10000; // Reduced from 100k
+      }
+    } catch {
+      // Ignore if analysis fails
     }
 
     const seenChains = new Set();
@@ -1179,6 +1268,76 @@ export async function main(ns) {
         );
       return structuredDefenseMove;
     }
+
+    // EYE STRATEGY: Disabled urgent eye overrides - eye creation/blocking now handled via heuristic bonuses only
+    // Reason: Urgent eye moves were bypassing normal move ranking and playing suboptimal positions
+    // Eye bonuses in scoreMoveHeuristic ensure eyes are prioritized correctly within ranked candidates
+    // This keeps the proven defense + heuristic ranking intact while still valuing eye creation
+    /*
+    try {
+      // Check if we have any groups with 0 eyes
+      let hasGroupWithoutEyes = false;
+      for (let r = 0; r < board.length; r++) {
+        for (let c = 0; c < board[0].length; c++) {
+          if (
+            board[r][c] === "X" &&
+            countEyesForGroup(board, r, c, "X") === 0
+          ) {
+            hasGroupWithoutEyes = true;
+            break;
+          }
+        }
+        if (hasGroupWithoutEyes) break;
+      }
+
+      if (hasGroupWithoutEyes) {
+        // Urgently look for eye-creating moves
+        const eyeCreatingMoves = legalMoves.filter((m) =>
+          wouldCreateEye(board, m.row, m.col, "X"),
+        );
+        if (eyeCreatingMoves.length > 0) {
+          // Prioritize the one that also threatens enemy groups
+          let bestEyeMove = eyeCreatingMoves[0];
+          for (const eyeMove of eyeCreatingMoves) {
+            // Check if this eye also blocks enemy
+            if (wouldBlockEnemyEye(board, eyeMove.row, eyeMove.col, "X")) {
+              bestEyeMove = eyeMove;
+              break;
+            }
+          }
+          // Double-check: only return if move is in legalMoves (should always be true)
+          const isLegal = legalMoves.some(
+            (m) => m.row === bestEyeMove.row && m.col === bestEyeMove.col,
+          );
+          if (isLegal) {
+            if (DEBUG)
+              ns.print(
+                `URGENT EYE CREATION: ${bestEyeMove.row},${bestEyeMove.col}`,
+              );
+            return [bestEyeMove.row, bestEyeMove.col];
+          }
+        }
+      }
+
+      // Alternatively, if enemy is about to create 2 eyes (become unkillable), block urgently
+      if (moveCount >= OPENING_END_MOVE) {
+        const vulnerableBlockMove = findMostVulnerableEnemyGroup(
+          board,
+          "X",
+          legalMoves,
+        );
+        if (vulnerableBlockMove) {
+          if (DEBUG)
+            ns.print(
+              `URGENT EYE BLOCK: ${vulnerableBlockMove[0]},${vulnerableBlockMove[1]}`,
+            );
+          return vulnerableBlockMove;
+        }
+      }
+    } catch {
+      // Ignore eye analysis if it fails
+    }
+    */
 
     const emptyCount = countEmptyPlayableCells(board);
     const enemyStoneCount = countCells(board, "O");
@@ -1903,7 +2062,10 @@ export async function main(ns) {
         if (!inBounds(board, nextRow, nextCol)) continue;
         if (board[nextRow][nextCol] === player) {
           stack.push([nextRow, nextCol]);
-        } else if (board[nextRow][nextCol] === "." && isPotentialEye(board, nextRow, nextCol, player)) {
+        } else if (
+          board[nextRow][nextCol] === "." &&
+          isPotentialEye(board, nextRow, nextCol, player)
+        ) {
           eyeSet.add(`${nextRow},${nextCol}`);
         }
       }
@@ -1927,9 +2089,15 @@ export async function main(ns) {
     return isPotentialEye(board, row, col, enemy);
   }
 
-  function findMostVulnerableEnemyGroup(board, player) {
-    // Find the enemy group with 0-1 eyes (most vulnerable) and return a blocking move nearby
+  function findMostVulnerableEnemyGroup(board, player, legalMoves) {
+    // Find the enemy group with 0-1 eyes (most vulnerable) and return a legal blocking move nearby
     const enemy = player === "X" ? "O" : "X";
+    // Create a set of legal move positions for fast lookup
+    const legalSet = new Set();
+    for (const lm of legalMoves) {
+      legalSet.add(`${lm.row},${lm.col}`);
+    }
+
     for (let r = 0; r < board.length; r++) {
       for (let c = 0; c < board[0].length; c++) {
         if (board[r][c] === enemy) {
@@ -1938,8 +2106,11 @@ export async function main(ns) {
             // This enemy group is at risk; find a nearby potential eye to block
             for (const [nr, nc] of neighbors(r, c)) {
               if (inBounds(board, nr, nc) && board[nr][nc] === ".") {
-                if (isPotentialEye(board, nr, nc, enemy)) {
-                  return [nr, nc]; // Block this eye
+                if (
+                  isPotentialEye(board, nr, nc, enemy) &&
+                  legalSet.has(`${nr},${nc}`)
+                ) {
+                  return [nr, nc]; // Block this eye (only if legal)
                 }
               }
             }
