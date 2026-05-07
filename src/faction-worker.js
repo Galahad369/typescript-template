@@ -100,6 +100,7 @@ export async function main(ns) {
   function tryJoinAvailableFactions(ns) {
     const player = ns.getPlayer();
     const currentFactions = new Set(player.factions || []);
+    const hackingLevel = ns.getHackingLevel();
 
     // Check which factions player can join
     const joinableFactions = [
@@ -117,13 +118,14 @@ export async function main(ns) {
         return true;
       }
 
-      if (faction === "CyberSec" && player.hacking >= 30) {
+      // Use the live hacking level so faction joins stay accurate in 3.0.0.
+      if (faction === "CyberSec" && hackingLevel >= 30) {
         ns.singularity.joinFaction(faction);
         ns.print(`✓ Joined faction: ${faction}`);
         return true;
       }
 
-      if (faction === "Netburners" && player.hacking >= 80) {
+      if (faction === "Netburners" && hackingLevel >= 80) {
         ns.singularity.joinFaction(faction);
         ns.print(`✓ Joined faction: ${faction}`);
         return true;

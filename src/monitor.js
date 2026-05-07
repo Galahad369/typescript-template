@@ -29,7 +29,7 @@ export async function main(ns) {
       "prep-servers.js",
       "Hacknet_manager.js",
       "purchase-server.js",
-      "stock_test.js",
+      "stock-test.js",
     ];
 
     for (const script of scripts) {

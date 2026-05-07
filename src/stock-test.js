@@ -5,7 +5,10 @@ export async function main(ns) {
 
   // Configuration
   const scriptTimer = 2000; // Tick interval (ms)
-  const moneyKeep = 1000000000; // Reserve capital failsafe
+  const moneyKeep = 50000000; // Reserve capital failsafe
+  // 100k = 100,000
+  // 1M = 1,000,000
+  // 1B = 1,000,000,000
   const stockBuyOver_Long = 0.6; // Buy long when forecast >= this
   const stockBuyUnder_Short = 0.4; // Buy short when forecast <= this
   const stockVolatility = 0.05; // Max volatility to trade

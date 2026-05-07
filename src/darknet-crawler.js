@@ -150,8 +150,10 @@ export async function main(ns) {
     // Copy this script to spread
     try {
       ns.scp(SCRIPT_NAME, hostname);
-      ns.exec(SCRIPT_NAME, hostname, { preventDuplicates: true });
-      log(`[${hostname}] ✓ Script deployed and running`);
+      if (!ns.scriptRunning(SCRIPT_NAME, hostname)) {
+        ns.exec(SCRIPT_NAME, hostname, 1);
+        log(`[${hostname}] ✓ Script deployed and running`);
+      }
     } catch (e) {
       log(`[${hostname}] Could not deploy script: ${e}`);
     }

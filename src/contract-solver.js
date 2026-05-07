@@ -2,6 +2,7 @@
 export async function main(ns) {
   ns.disableLog("ALL");
 
+  // Keep the script usable both as a one-shot scanner and as a background loop.
   const flags = ns.flags([
     ["tail", false],
     ["once", false],
@@ -14,6 +15,7 @@ export async function main(ns) {
   const solved = new Set();
   const discovered = new Set();
 
+  // Scan the network repeatedly so contracts added later are picked up too.
   log(ns, `=== CONTRACT SOLVER INITIALIZED ===`);
 
   while (true) {
@@ -118,6 +120,7 @@ function solveContract(ns, host, file, verbose = false) {
 }
 
 function solveByType(type, data) {
+  // Match the exact current contract names from Bitburner 3.0.0.
   switch (type) {
     case "Find Largest Prime Factor":
       return findLargestPrimeFactor(data);
