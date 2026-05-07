@@ -71,10 +71,36 @@ export async function main(ns) {
     return smallest;
   }
 
-  // Deploy the early-hack template and maximize threads to fill server RAM
+  // Deploy workers to cloud servers: prefer early-hack-template (40% RAM), fallback to smart-early-hack (fill remaining)
   async function deployHack(server) {
     const maxRamAvailable = ns.getServerMaxRam(server);
-    const scriptToUse = "smart-early-hack.js";
+    const ramAllocation40Pct = maxRamAvailable * 0.4;
+
+    // Try early-hack-template first (more efficient for early game)
+    let scriptToUse = "early-hack-template.js";
+    if (
+      ns.fileExists(scriptToUse, "home") &&
+      ramAllocation40Pct >= ns.getScriptRam(scriptToUse)
+    ) {
+      const scriptRam = ns.getScriptRam(scriptToUse);
+      const maxThreads = Math.floor(ramAllocation40Pct / scriptRam);
+
+      if (maxThreads > 0) {
+        try {
+          await ns.scp(scriptToUse, server);
+          ns.exec(scriptToUse, server, maxThreads);
+          ns.print(
+            `✓ Deployed ${scriptToUse} (${maxThreads} threads, 40% RAM allocation) to ${server}`,
+          );
+          return;
+        } catch (e) {
+          ns.print(`Error deploying ${scriptToUse} to ${server}: ${e}`);
+        }
+      }
+    }
+
+    // Fallback to smart-early-hack.js and use all available RAM
+    scriptToUse = "smart-early-hack.js";
     if (!ns.fileExists(scriptToUse, "home")) {
       ns.print(`✗ ${scriptToUse} not found on home`);
       return;
@@ -94,7 +120,7 @@ export async function main(ns) {
       await ns.scp(scriptToUse, server);
       ns.exec(scriptToUse, server, maxThreads);
       ns.print(
-        `✓ Deployed ${scriptToUse} (${maxThreads} threads) to ${server}`,
+        `✓ Deployed ${scriptToUse} (${maxThreads} threads, full RAM allocation) to ${server}`,
       );
     } catch (e) {
       ns.print(`Error deploying ${scriptToUse} to ${server}: ${e}`);

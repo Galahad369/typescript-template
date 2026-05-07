@@ -40,54 +40,39 @@ export async function main(ns) {
   }
 
   function deployHackFarmOnHome() {
+    const script = "multi-target-hack.js";
+    if (!ns.fileExists(script, controlServer)) return;
+
     const totalRam = ns.getServerMaxRam(controlServer);
-    const allocation40Pct = totalRam * 0.4;
+    const usedRam = ns.getServerUsedRam(controlServer);
+    const availableRam = totalRam - usedRam;
+    const scriptRam = ns.getScriptRam(script);
 
-    // Run the template locally if we have room for it.
-    const earlyHackScript = "early-hack-template.js";
-    if (ns.fileExists(earlyHackScript, controlServer)) {
-      const earlyHackRam = ns.getScriptRam(earlyHackScript);
-      const runningEarlyHacks = ns
-        .ps(controlServer)
-        .filter((p) => p.filename === earlyHackScript);
-      const runningEarlyThreads = runningEarlyHacks.reduce(
-        (total, p) => total + p.threads,
-        0,
-      );
+    // Scale multi-target-hack to use all remaining free RAM, but reserve 5% for supervisor overhead
+    const reserveRam = totalRam * 0.05;
+    const allocationRam = Math.floor(availableRam - reserveRam);
+    const maxThreads = Math.floor(allocationRam / scriptRam);
 
-      if (runningEarlyThreads === 0 && allocation40Pct >= earlyHackRam) {
-        const maxThreads = Math.floor(allocation40Pct / earlyHackRam);
-        if (maxThreads > 0) {
-          ns.exec(earlyHackScript, controlServer, maxThreads);
-          ns.print(
-            `✓ Early hack farm on home: ${maxThreads} threads (${ns.format.number(allocation40Pct, "0.00")}GB / 40% of total RAM)`,
-          );
-        }
-      }
+    if (maxThreads <= 0) return;
+
+    // Check if already running and get current thread count
+    const running = ns.ps(controlServer).filter((p) => p.filename === script);
+    const currentThreads = running.reduce((sum, p) => sum + p.threads, 0);
+
+    // Only restart if threads have decreased significantly (at least 10% drop) or not running
+    if (currentThreads > 0 && currentThreads >= maxThreads * 0.9) {
+      return; // Close enough, don't restart
     }
 
-    // Keep one smart worker on home as a low-friction fallback.
-    const smartScript = "smart-early-hack.js";
-    if (ns.fileExists(smartScript, controlServer)) {
-      const smartRam = ns.getScriptRam(smartScript);
-      const runningSmartHacks = ns
-        .ps(controlServer)
-        .filter((p) => p.filename === smartScript);
-      const runningSmartThreads = runningSmartHacks.reduce(
-        (total, p) => total + p.threads,
-        0,
-      );
-
-      if (runningSmartThreads === 0 && allocation40Pct >= smartRam) {
-        const maxThreads = Math.floor(allocation40Pct / smartRam);
-        if (maxThreads > 0) {
-          ns.exec(smartScript, controlServer, maxThreads);
-          ns.print(
-            `✓ Smart early hack farm on home: ${maxThreads} threads (${ns.format.number(allocation40Pct, "0.00")}GB / 40% of total RAM)`,
-          );
-        }
-      }
+    // Kill existing process to restart with new thread count
+    if (currentThreads > 0) {
+      ns.scriptKill(script, controlServer);
     }
+
+    ns.exec(script, controlServer, maxThreads);
+    ns.print(
+      `✓ Multi-target hack on home: ${maxThreads} threads (${ns.format.number(allocationRam, "0.00")}GB allocated)`,
+    );
   }
 
   // Deploy the smart worker to the single best rooted host so we avoid duplicate remote copies.
@@ -131,7 +116,7 @@ export async function main(ns) {
   }
 
   function deployToBestServer() {
-    const script = "smart-early-hack.js";
+    const script = "multi-target-hack.js";
     if (!ns.fileExists(script, controlServer)) return;
 
     const best = getBestDeployTarget();
@@ -155,7 +140,7 @@ export async function main(ns) {
   }
 
   ns.print("=== AUTO ORCHESTRATOR ===");
-  ns.print("Starting non-SF automation supervisor:");
+  ns.print("Starting automation supervisor:");
   ns.print("  1. root-deploy-monitor.js (root & deploy)");
   ns.print("  2. profiler.js (analyze targets)");
   ns.print("  3. prep-servers.js (prep top targets)");
@@ -163,6 +148,8 @@ export async function main(ns) {
   ns.print("  5. Hacknet_manager.js (upgrade hacknet)");
   ns.print("  6. purchase-server.js (expand servers)");
   ns.print("  7. contract-solver.js (solve coding contracts)");
+  ns.print("Hack farms:");
+  ns.print("  - multi-target-hack (home + best rooted server)");
   ns.print("========================");
   ns.print("");
 
