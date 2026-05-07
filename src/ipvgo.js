@@ -19,7 +19,9 @@ export async function main(ns) {
   let DEBUG = false;
   let DEBUG_CANDIDATES = false;
   let LOG_TURNS = false;
-  let LOG_ENABLE = false;
+  let LOG_ENABLE = true;
+  // Minimal margin (points) required before adaptive width expansion triggers
+  const LOSS_MARGIN_THRESHOLD = 2.0;
 
   // ===== STRATEGIC PARAMETERS (board-size-aware) =====
   // Pro Go strategy varies by board size: smaller boards prioritize corners/edges,
@@ -55,12 +57,13 @@ export async function main(ns) {
     const area = BOARD_SIZE * BOARD_SIZE;
     EXACT_SOLVE_EMPTY_THRESHOLD = Math.max(6, Math.floor(area * 0.06));
     EXACT_SOLVE_TIME_BUDGET_MS =
-      BOARD_SIZE <= 5 ? 500 : BOARD_SIZE <= 9 ? 800 : 1200;
+      BOARD_SIZE <= 5 ? 600 : BOARD_SIZE <= 9 ? 960 : 1440;
     EXACT_SOLVE_MAX_DEPTH = BOARD_SIZE <= 5 ? 12 : BOARD_SIZE <= 9 ? 14 : 16;
     EXACT_SOLVE_MAX_LEGAL_MOVES = BOARD_SIZE <= 5 ? 5 : BOARD_SIZE <= 9 ? 6 : 8;
 
     // Pass threshold scales with board area (avoid passing on small negative deltas)
-    PASS_THRESHOLD = -Math.max(5e6, Math.floor(area * 200000));
+    // AGGRESSIVE: Pass less (only when very far behind). Before: -5M to -7.8M. Now: -1M to -2M
+    PASS_THRESHOLD = -Math.max(1e6, Math.floor(area * 50000));
 
     // Weights scale mildly with board size
     WEAK_STONE_WEIGHT = 120000;
@@ -77,6 +80,10 @@ export async function main(ns) {
       OPENING_END_MOVE = 3; // Very short opening on 5x5 (center + 2 corners)
       MIDGAME_END_MOVE = 10; // Short midgame
       ENDGAME_START_EMPTY_THRESHOLD = 8; // Transition to endgame ~40% full
+      // On tiny 5x5 boards, prefer exact solving earlier to avoid catastrophic collapses
+      EXACT_SOLVE_EMPTY_THRESHOLD = 12;
+      EXACT_SOLVE_TIME_BUDGET_MS = 1440;
+      EXACT_SOLVE_MAX_LEGAL_MOVES = 8;
     } else if (BOARD_SIZE === 7) {
       OPENING_END_MOVE = 4; // Center + corners
       MIDGAME_END_MOVE = 14; // Moderate midgame
@@ -92,7 +99,8 @@ export async function main(ns) {
       ENDGAME_START_EMPTY_THRESHOLD = 30; // ~17% full
     }
 
-    UPDATE_INTERVAL_MS = 60;
+    // Slow the main loop by 10% to reduce action spam/lag.
+    UPDATE_INTERVAL_MS = 110;
 
     // Build heatmap: use Chebyshev distance to center and square to amplify center
     HEATMAP = Array.from({ length: BOARD_SIZE }, (_, r) =>
@@ -499,6 +507,17 @@ export async function main(ns) {
       score += CORNER_EDGE_HEATMAP[move.row][move.col] * 20000;
     }
 
+    // Build chain-size map for enemy groups (used to prioritize invading large frameworks)
+    const chainSize = {};
+    for (let rr = 0; rr < board.length; rr++) {
+      for (let cc = 0; cc < board[rr].length; cc++) {
+        const cid = currentChains[rr][cc];
+        if (cid !== null && board[rr][cc] === enemy) {
+          chainSize[cid] = (chainSize[cid] || 0) + 1;
+        }
+      }
+    }
+
     const seenChains = new Set();
     for (const [nextRow, nextCol] of neighbors(move.row, move.col)) {
       if (!inBounds(board, nextRow, nextCol)) continue;
@@ -513,6 +532,19 @@ export async function main(ns) {
         if (liberties === 1) score += 500000;
         else if (liberties === 2) score += 120000;
         else score += 20000;
+        // MIDGAME INVASION BONUS: if this neighbor belongs to a large enemy chain,
+        // reward safe probing/invasion in midgame so opponent can't build unchallenged frameworks.
+        try {
+          const largeChain = chainId !== null && (chainSize[chainId] || 0) >= 6;
+          if (
+            largeChain &&
+            moveCount >= 6 &&
+            moveCount <= 14 &&
+            ownGroup.libs > 1
+          ) {
+            score += 250000; // encourage contesting large enemy groups
+          }
+        } catch {}
       } else if (cell === player) {
         if (liberties === 1) score += 300000;
         else if (liberties === 2) score += 70000;
@@ -575,8 +607,12 @@ export async function main(ns) {
       }
       // Increased bonus during opening (moves 3-8) for stronger defensive consolidation
       const consolidationBonus =
-        moveCount >= 3 && moveCount <= 8 ? 150000 : 100000;
+        moveCount >= 3 && moveCount <= 8 ? 220000 : 200000;
       score += friendlyNeighbors * consolidationBonus;
+      // Penalize completely isolated moves in the critical consolidation window
+      if (friendlyNeighbors === 0) {
+        score -= 300000; // avoid scattered, non-connecting plays (stricter)
+      }
     }
 
     // EYE STRATEGY (all game phases): Create own eyes + Block enemy eyes
@@ -662,6 +698,7 @@ export async function main(ns) {
     let areaSim = null;
     let deltaFriendly = 0;
     let friendlyComponentDelta = 0;
+    let finalScoreSim = null;
     try {
       const simulatedControlled = ns.go.analysis.getControlledEmptyNodes(
         toBoardState(simulatedBoard),
@@ -707,19 +744,20 @@ export async function main(ns) {
       // Moves 21+: total capture mode (800k) - only move if it gains area
       const territoryMultiplier =
         moveCount >= 3 && moveCount <= 8
-          ? 80000
+          ? 220000
           : moveCount <= 14
-            ? 120000
+            ? 280000
             : moveCount <= 20
               ? 500000
               : 800000;
       score += deltaFriendly * territoryMultiplier;
 
       // In late endgame (moves 15+), heavily penalize any increase in enemy control (i.e., reward reducing it)
-      if (moveCount >= 15) {
+      if (moveCount >= 12) {
         const enemyControlDelta =
           enemyControlSim - countControlled(board, origControlled, "O");
-        const enemyCaptureBonus = moveCount >= 21 ? 750000 : 450000;
+        const enemyCaptureBonus =
+          moveCount >= 21 ? 750000 : moveCount >= 15 ? 500000 : 300000;
         score -= enemyControlDelta * enemyCaptureBonus; // Negative delta = we reduced enemy territory
       }
 
@@ -727,31 +765,31 @@ export async function main(ns) {
       // In endgame (moves 15+), reduce component bonuses since we're prioritizing captures, not consolidation.
       const componentBonus =
         moveCount >= 3 && moveCount <= 14
-          ? 150000
+          ? 220000
           : moveCount < 6
-            ? 110000
+            ? 180000
             : moveCount < 15
-              ? 70000
-              : 20000; // Minimal in endgame
+              ? 120000
+              : 25000; // Minimal in endgame
       score += friendlyComponentDelta * componentBonus;
       score -=
         componentDelta *
         (moveCount >= 3 && moveCount <= 12
-          ? 100000
+          ? 180000
           : moveCount < 6
-            ? 80000
+            ? 150000
             : moveCount < 15
-              ? 45000
-              : 15000); // Minimal penalty in endgame
+              ? 100000
+              : 30000); // Minimal penalty in endgame
       score -=
         singletonDelta *
         (moveCount >= 3 && moveCount <= 12
-          ? 120000
+          ? 200000
           : moveCount < 6
-            ? 90000
+            ? 160000
             : moveCount < 15
-              ? 50000
-              : 20000); // Minimal in endgame
+              ? 120000
+              : 40000); // Minimal in endgame
 
       // Also reward having more friendly control than enemy on simulated board
       score += (friendlyControlSim - enemyControlSim) * 5000;
@@ -760,6 +798,13 @@ export async function main(ns) {
       areaSim = scoreAreaProxy(simulatedBoard, simulatedControlled, komi);
       const areaDelta = areaSim - (typeof areaOrig === "number" ? areaOrig : 0);
       score += areaDelta * 50000;
+
+      // Cache the end-state score for later filtering so we don't recompute it.
+      finalScoreSim = estimateFinalScore(
+        simulatedBoard,
+        simulatedControlled,
+        komi,
+      );
     } catch {
       // Ignore control analysis if unavailable
     }
@@ -792,6 +837,7 @@ export async function main(ns) {
       deltaFriendly,
       friendlyComponentDelta,
       enemyCaptureRisk,
+      finalScoreSim,
     };
   }
 
@@ -1064,6 +1110,16 @@ export async function main(ns) {
     const historyKeys = getHistoryKeys();
     const currentChains = ns.go.analysis.getChains(board);
     const currentLiberties = ns.go.analysis.getLiberties(board);
+    // Build enemy chain size map for adjacency checks
+    const chainSizeMap = {};
+    for (let rr = 0; rr < board.length; rr++) {
+      for (let cc = 0; cc < board[rr].length; cc++) {
+        const cid = currentChains[rr][cc];
+        if (cid !== null && board[rr][cc] === "O") {
+          chainSizeMap[cid] = (chainSizeMap[cid] || 0) + 1;
+        }
+      }
+    }
     // Get original control map for the board (may be used to avoid occupying empties we already own)
     let origControlled = null;
     try {
@@ -1139,6 +1195,12 @@ export async function main(ns) {
       // Let late-game sacrifices through if they preserve or improve the actual final area score.
       // This keeps the bot from refusing decisive trades that secure a larger margin.
       if (moveCount < 8 && emptyCount > 18) return false;
+
+      if (typeof move.finalScoreSim === "number") {
+        return (
+          move.finalScoreSim >= finalScoreOrig - (moveCount >= 12 ? 1.5 : 0.5)
+        );
+      }
 
       try {
         const simControlled = ns.go.analysis.getControlledEmptyNodes(
@@ -1370,16 +1432,16 @@ export async function main(ns) {
 
     // Use MCTS for larger boards or later mid-game (compact, playouts use rough heuristic)
     try {
-      const useMCTS = board.length >= 7 || moveCount >= 4;
+      const useMCTS = board.length >= 7 || (board.length > 5 && moveCount >= 4);
       if (useMCTS) {
         const timeBudget =
           board.length <= 5
-            ? 250
+            ? 300
             : board.length <= 7
-              ? 350
+              ? 420
               : board.length <= 9
-                ? 500
-                : 800;
+                ? 600
+                : 960;
         const mctsMove = mctsSearch(board, "X", timeBudget);
         if (mctsMove) {
           if (DEBUG)
@@ -1438,6 +1500,7 @@ export async function main(ns) {
           deltaFriendly: res.deltaFriendly,
           friendlyComponentDelta: res.friendlyComponentDelta,
           enemyCaptureRisk: res.enemyCaptureRisk,
+          finalScoreSim: res.finalScoreSim,
         };
       })
       .sort((left, right) => right.score - left.score);
@@ -1465,9 +1528,24 @@ export async function main(ns) {
             }
           }
           const isEnemyTerritory = territoryOwnerForMove(m) === "O";
+          // Reject isolated exploration moves
           if (friendlyNeighbors === 0 && !isEnemyTerritory) {
-            return false; // Reject isolated exploration moves
+            return false;
           }
+          // Reject isolated probes directly adjacent to a very large enemy chain
+          let adjacentLargeEnemy = false;
+          for (const [nr, nc] of neighbors(m.row, m.col)) {
+            if (!inBounds(board, nr, nc)) continue;
+            if (board[nr][nc] === "O") {
+              const cid = currentChains[nr][nc];
+              if (cid !== null && (chainSizeMap[cid] || 0) >= 6) {
+                adjacentLargeEnemy = true;
+                break;
+              }
+            }
+          }
+          if (adjacentLargeEnemy && friendlyNeighbors === 0 && m.captured === 0)
+            return false;
         }
         if (
           moveCount <= 10 &&
@@ -1502,14 +1580,15 @@ export async function main(ns) {
     if (!endgameFilter) {
       candidateMoves = candidateMoves.filter((m) => {
         try {
-          const simControlled = ns.go.analysis.getControlledEmptyNodes(
-            toBoardState(m.board),
-          );
-          const finalScoreSim = estimateFinalScore(
-            m.board,
-            simControlled,
-            komi,
-          );
+          const finalScoreSim =
+            typeof m.finalScoreSim === "number"
+              ? m.finalScoreSim
+              : (() => {
+                  const simControlled = ns.go.analysis.getControlledEmptyNodes(
+                    toBoardState(m.board),
+                  );
+                  return estimateFinalScore(m.board, simControlled, komi);
+                })();
           // Only play if final score is better than current (increases our winning margin)
           return finalScoreSim > finalScoreOrig;
         } catch {
@@ -1576,6 +1655,7 @@ export async function main(ns) {
             deltaFriendly: res.deltaFriendly,
             friendlyComponentDelta: res.friendlyComponentDelta,
             enemyCaptureRisk: res.enemyCaptureRisk,
+            finalScoreSim: res.finalScoreSim,
           };
         })
         .sort((left, right) => right.score - left.score);
@@ -2270,6 +2350,8 @@ export async function main(ns) {
   let winCount = 0;
   let lossCount = 0;
   let adaptiveHeuristicMoveLimit = HEURISTIC_MOVE_LIMIT;
+  let lossStreak = 0;
+  let lastLossMargin = 0;
 
   while (true) {
     try {
@@ -2325,6 +2407,8 @@ export async function main(ns) {
 
         if (won) {
           winCount++;
+          // reset loss streak on win
+          lossStreak = 0;
           adaptiveHeuristicMoveLimit = Math.max(
             HEURISTIC_MOVE_LIMIT,
             adaptiveHeuristicMoveLimit - 1,
@@ -2334,14 +2418,58 @@ export async function main(ns) {
           );
         } else {
           lossCount++;
-          adaptiveHeuristicMoveLimit = Math.min(
-            MAX_ADAPTIVE_HEURISTIC_MOVE_LIMIT,
-            adaptiveHeuristicMoveLimit + 1,
-          );
-          dumpGameTranscript(result, BOARD_SIZE);
-          ns.print(
-            `Loss recorded (${lossCount}). Expanding heuristic width to ${adaptiveHeuristicMoveLimit}.`,
-          );
+          lossStreak++;
+          // Read final scores to compute margin (whiteScore - blackScore)
+          try {
+            const state = ns.go.getGameState();
+            const blackScore =
+              typeof state.blackScore === "number" ? state.blackScore : 0;
+            const whiteScore =
+              typeof state.whiteScore === "number" ? state.whiteScore : 0;
+            lastLossMargin = Math.max(0, whiteScore - blackScore);
+          } catch {
+            lastLossMargin = 0;
+          }
+
+          // Only expand heuristic width after two consecutive losses AND a meaningful margin
+          // This avoids reacting to narrow (noisy) losses that don't indicate a systemic flaw.
+          if (lossStreak >= 2 && lastLossMargin >= LOSS_MARGIN_THRESHOLD) {
+            adaptiveHeuristicMoveLimit = Math.min(
+              MAX_ADAPTIVE_HEURISTIC_MOVE_LIMIT,
+              adaptiveHeuristicMoveLimit + 1,
+            );
+            dumpGameTranscript(result, BOARD_SIZE);
+            ns.print(
+              `Loss recorded (${lossCount}). Loss streak ${lossStreak}. Margin=${lastLossMargin}. Expanding heuristic width to ${adaptiveHeuristicMoveLimit}.`,
+            );
+          } else {
+            // keep transcript but don't expand yet
+            dumpGameTranscript(result, BOARD_SIZE);
+            ns.print(
+              `Loss recorded (${lossCount}). Loss streak ${lossStreak}. Margin=${lastLossMargin}. Waiting before expanding heuristic width.`,
+            );
+          }
+
+          // Per-game telemetry: append a compact JSON line for later analysis
+          try {
+            const telemetry = {
+              game: gameCount,
+              won: false,
+              lossStreak,
+              lastLossMargin,
+              adaptiveHeuristicMoveLimit,
+              heuristicBase: HEURISTIC_MOVE_LIMIT,
+              boardSize: BOARD_SIZE,
+              timestamp: Date.now(),
+            };
+            // Append to workspace file (BitBurner supports ns.write with mode "a")
+            // Keep this best-effort: ignore failures
+            await ns.write(
+              "ipvgo_game_log.txt",
+              JSON.stringify(telemetry) + "\n",
+              "a",
+            );
+          } catch {}
         }
 
         // Clear caches between games
