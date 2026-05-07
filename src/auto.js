@@ -17,6 +17,7 @@ export async function main(ns) {
     "Hacknet_manager.js", // Manage hacknet nodes
     "purchase-server.js", // Manage cloud servers
     "stock-test.js", // Trade stocks
+    "contract-solver.js", // Solve coding contracts
   ];
 
   function ensureAutoScripts() {
@@ -47,6 +48,7 @@ export async function main(ns) {
   function deployHackFarmOnHome() {
     const totalRam = ns.getServerMaxRam(controlServer);
     const usedRam = ns.getServerUsedRam(controlServer);
+    const freeRam = totalRam - usedRam;
 
     // Split 80% allocation: 40% for early-hack-template, 40% for smart-early-hack
     const allocation40Pct = totalRam * 0.4;
@@ -171,6 +173,7 @@ export async function main(ns) {
   ns.print("  7. Hacknet_manager.js (upgrade hacknet)");
   ns.print("  8. purchase-server.js (expand servers)");
   ns.print("  9. stock-test.js (trade stocks)");
+  ns.print(" 10. contract-solver.js (solve coding contracts)");
   ns.print("  + hack.js (auto virus spreading)");
   ns.print("========================");
   ns.print("");
