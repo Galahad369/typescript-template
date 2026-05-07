@@ -42,6 +42,7 @@ export async function main(ns) {
     // We can safely exit and save RAM!
     if (minValue === Infinity) {
       ns.tprint("All Hacknet nodes are fully maxed out! Exiting manager.");
+      await ns.sleep(1000000); // Sleep for a very long time to effectively stop the script
       return;
     }
 
