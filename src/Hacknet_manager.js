@@ -2,7 +2,7 @@
 export async function main(ns) {
   const delayTime = 1000; // Hardcoded 1 second delay
   const bufferMultiplier = 2; // Keep 20% extra cash before buying
-  const maxNodes = 30;
+  const maxNodes = 31;
 
   while (true) {
     let ownedNodes = ns.hacknet.numNodes();
