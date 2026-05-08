@@ -9,6 +9,7 @@ export async function main(ns) {
   // 100k = 100,000
   // 1M = 1,000,000
   // 1B = 1,000,000,000
+  // 100B = 100,000,000,000
   const stockBuyOver_Long = 0.6; // Buy long when forecast >= this
   const stockBuyUnder_Short = 0.4; // Buy short when forecast <= this
   const stockVolatility = 0.05; // Max volatility to trade
@@ -16,12 +17,18 @@ export async function main(ns) {
   const maxSharePercent = 1.0; // Maximum shares as % of max
   const sellThreshold_Long = 0.55; // Sell long when forecast < this
   const sellThreshold_Short = 0.4; // Sell short when forecast > this
-  const shortUnlock = false; // Enable short selling (requires BN8 or SF8 lvl 2)
+  const shortUnlock = true; // Enable short selling (requires BN8 or SF8 lvl 2)
   const DEBUG = false; // Enable detailed logging
+  const momentumShortWindow = 5; // ticks
+  const momentumLongWindow = 30; // ticks
 
   // API access check
   function hasRequiredAccess() {
-    return ns.stock.hasTixApiAccess() && ns.stock.has4SDataTixApi();
+    try {
+      return ns.stock.hasTixApiAccess() && ns.stock.has4SDataTixApi();
+    } catch (e) {
+      return false;
+    }
   }
 
   // Format large numbers with proper notation
@@ -31,20 +38,41 @@ export async function main(ns) {
   }
 
   // Buy positions based on forecast and volatility
-  function buyPositions(stock) {
+  function buyPositions(stock, use4S, priceHistory) {
     const position = ns.stock.getPosition(stock);
     const maxShares =
       ns.stock.getMaxShares(stock) * maxSharePercent - position[0];
     const maxSharesShort =
       ns.stock.getMaxShares(stock) * maxSharePercent - position[2];
     const askPrice = ns.stock.getAskPrice(stock);
-    const forecast = ns.stock.getForecast(stock);
-    const volatility = ns.stock.getVolatility(stock);
+    const forecast = use4S ? ns.stock.getForecast(stock) : null;
+    const volatility = use4S ? ns.stock.getVolatility(stock) : null;
     const playerMoney = ns.getPlayer().money;
     const commission = 100000;
 
+    // Momentum fallback: compute simple moving averages when 4S is not available
+    let momentumSignal = null; // 'buy' | 'sell' | null
+    if (!use4S) {
+      const hist = priceHistory[stock] || [];
+      if (hist.length >= momentumLongWindow) {
+        const shortSlice = hist.slice(-momentumShortWindow);
+        const longSlice = hist.slice(-momentumLongWindow);
+        const sma = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+        const sSMA = sma(shortSlice);
+        const lSMA = sma(longSlice);
+        const rel = (sSMA - lSMA) / lSMA;
+        if (rel > 0.01) momentumSignal = "buy";
+        else if (rel < -0.01) momentumSignal = "sell";
+      }
+    }
+
     // Buy Long positions
-    if (forecast >= stockBuyOver_Long && volatility <= stockVolatility) {
+    if (
+      (use4S &&
+        forecast >= stockBuyOver_Long &&
+        volatility <= stockVolatility) ||
+      (!use4S && momentumSignal === "buy")
+    ) {
       if (
         playerMoney - moneyKeep >
         ns.stock.getPurchaseCost(stock, minSharePercent, "L")
@@ -67,8 +95,10 @@ export async function main(ns) {
     // Buy Short positions (if unlocked)
     if (
       shortUnlock &&
-      forecast <= stockBuyUnder_Short &&
-      volatility <= stockVolatility
+      ((use4S &&
+        forecast <= stockBuyUnder_Short &&
+        volatility <= stockVolatility) ||
+        (!use4S && momentumSignal === "sell"))
     ) {
       if (
         playerMoney - moneyKeep >
@@ -91,12 +121,28 @@ export async function main(ns) {
   }
 
   // Sell positions if forecast crosses threshold
-  function sellIfOutsideThreshold(stock) {
+  function sellIfOutsideThreshold(stock, use4S, priceHistory) {
     const position = ns.stock.getPosition(stock);
-    const forecast = ns.stock.getForecast(stock);
+    const forecast = use4S ? ns.stock.getForecast(stock) : null;
     const bidPrice = ns.stock.getBidPrice(stock);
     const askPrice = ns.stock.getAskPrice(stock);
     const commission = 100000;
+
+    // Momentum fallback
+    let momentumSignal = null;
+    if (!use4S) {
+      const hist = priceHistory[stock] || [];
+      if (hist.length >= momentumLongWindow) {
+        const shortSlice = hist.slice(-momentumShortWindow);
+        const longSlice = hist.slice(-momentumLongWindow);
+        const sma = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+        const sSMA = sma(shortSlice);
+        const lSMA = sma(longSlice);
+        const rel = (sSMA - lSMA) / lSMA;
+        if (rel > 0.01) momentumSignal = "buy";
+        else if (rel < -0.01) momentumSignal = "sell";
+      }
+    }
 
     // Sell Long positions
     if (position[0] > 0) {
@@ -109,7 +155,10 @@ export async function main(ns) {
         );
       }
 
-      if (forecast < sellThreshold_Long) {
+      if (
+        (use4S && forecast < sellThreshold_Long) ||
+        (!use4S && momentumSignal === "sell")
+      ) {
         const soldFor = ns.stock.sellStock(stock, position[0]);
         if (soldFor > 0) {
           ns.print(
@@ -130,8 +179,10 @@ export async function main(ns) {
           `${stock} SHORT forecast ${(forecast * 100).toFixed(1)}% | ${ns.format.number(position[2])} shares | profit: ${formatNumber(profit)} (${roi}%)`,
         );
       }
-
-      if (forecast > sellThreshold_Short) {
+      if (
+        (use4S && forecast > sellThreshold_Short) ||
+        (!use4S && momentumSignal === "buy")
+      ) {
         const soldFor = ns.stock.sellShort(stock, position[2]);
         if (soldFor > 0) {
           ns.print(
@@ -165,9 +216,11 @@ export async function main(ns) {
   }
 
   // Check API access
-  if (!hasRequiredAccess()) {
-    ns.tprint("ERROR: Missing TIX API or 4S Data TIX API access. Exiting.");
-    return;
+  const use4S = hasRequiredAccess();
+  if (!use4S) {
+    ns.tprint(
+      "WARN: Missing TIX API or 4S Data TIX API access. Falling back to momentum trading.",
+    );
   }
 
   ns.print("=== STOCK TRADER INITIALIZED ===");
@@ -185,14 +238,18 @@ export async function main(ns) {
 
   // Main loop
   while (true) {
+    // price history store for momentum fallback
+    const priceHistory = {};
+
     // Get stocks sorted by forecast strength (closest to 0 or 1)
-    const orderedStocks = ns.stock
-      .getSymbols()
-      .sort(
-        (a, b) =>
-          Math.abs(0.5 - ns.stock.getForecast(b)) -
-          Math.abs(0.5 - ns.stock.getForecast(a)),
-      );
+    const symbols = ns.stock.getSymbols();
+    const orderedStocks = use4S
+      ? symbols.sort(
+          (a, b) =>
+            Math.abs(0.5 - ns.stock.getForecast(b)) -
+            Math.abs(0.5 - ns.stock.getForecast(a)),
+        )
+      : symbols.slice();
 
     let portfolioValue = 0;
     ns.print("─".repeat(60));
@@ -200,13 +257,21 @@ export async function main(ns) {
     for (const stock of orderedStocks) {
       const position = ns.stock.getPosition(stock);
 
+      // sample price for history
+      const price = ns.stock.getAskPrice(stock);
+      if (!priceHistory[stock]) priceHistory[stock] = [];
+      priceHistory[stock].push(price);
+      if (priceHistory[stock].length > momentumLongWindow) {
+        priceHistory[stock].shift();
+      }
+
       // Process existing positions
       if (position[0] > 0 || position[2] > 0) {
-        sellIfOutsideThreshold(stock);
+        sellIfOutsideThreshold(stock, use4S, priceHistory);
       }
 
       // Look for new positions
-      buyPositions(stock);
+      buyPositions(stock, use4S, priceHistory);
     }
 
     // Output status
