@@ -5,7 +5,8 @@ export async function main(ns) {
 
   // Configuration
   const scriptTimer = 2000; // Tick interval (ms)
-  const moneyKeep = 5000000000; // Reserve capital failsafe
+  const moneyKeep = 1000000; // Reserve capital failsafe
+  const moneyKeepPercent = 0.01; // reserve at least 1% of current money (capped by moneyKeep)
   // 100k = 100,000
   // 1M = 1,000,000
   // 1B = 1,000,000,000
@@ -21,6 +22,12 @@ export async function main(ns) {
   const DEBUG = false; // Enable detailed logging
   const momentumShortWindow = 5; // ticks
   const momentumLongWindow = 30; // ticks
+  const orderSlippage = 0.0025; // 0.25% price buffer for limit entry
+  const stopBuffer = 0.01; // 1% stop loss buffer
+  const orderTTL = 1000 * 60 * 30; // 30 minutes TTL for placed orders (ms)
+
+  // Local registry to track our placed orders and timestamps so we can cancel stale ones
+  const orderRegistry = new Map(); // key -> {stock, price, type, pos, ts, shares}
 
   // API access check
   function hasRequiredAccess() {
@@ -48,6 +55,7 @@ export async function main(ns) {
     const forecast = use4S ? ns.stock.getForecast(stock) : null;
     const volatility = use4S ? ns.stock.getVolatility(stock) : null;
     const playerMoney = ns.getPlayer().money;
+    const effectiveReserve = Math.min(moneyKeep, Math.floor(playerMoney * moneyKeepPercent));
     const commission = 100000;
 
     // Momentum fallback: compute simple moving averages when 4S is not available
@@ -73,20 +81,43 @@ export async function main(ns) {
         volatility <= stockVolatility) ||
       (!use4S && momentumSignal === "buy")
     ) {
-      if (
-        playerMoney - moneyKeep >
-        ns.stock.getPurchaseCost(stock, minSharePercent, "L")
-      ) {
+      const minShares = Math.max(1, Math.ceil(ns.stock.getMaxShares(stock) * (minSharePercent / 100)));
+      if (playerMoney - effectiveReserve > ns.stock.getPurchaseCost(stock, minShares, "L")) {
         const shares = Math.min(
-          Math.floor((playerMoney - moneyKeep - commission) / askPrice),
+          Math.floor((playerMoney - effectiveReserve - commission) / askPrice),
           maxShares,
         );
         if (shares > 0) {
-          const boughtFor = ns.stock.buyStock(stock, shares);
-          if (boughtFor > 0) {
-            ns.print(
-              `✓ LONG\t${stock}\t${ns.format.number(shares)} @ ${formatNumber(boughtFor)}`,
+          if (use4S) {
+            const placed = tryPlaceLimitOrder(
+              stock,
+              shares,
+              askPrice * (1 + orderSlippage),
+              "Limit Buy Order",
+              "L",
             );
+            if (!placed) {
+              const boughtFor = ns.stock.buyStock(stock, shares);
+              if (boughtFor > 0) {
+                ns.print(
+                  `✓ LONG\t${stock}\t${ns.format.number(shares)} @ ${formatNumber(boughtFor)}`,
+                );
+                cancelOppositeOrders(stock, "L");
+                placeProtectiveStop(stock, shares, boughtFor, "L");
+              }
+            } else {
+              // If limit placed, cancel opposite orders and place protective stop when filled (reconciled later)
+              cancelOppositeOrders(stock, "L");
+            }
+          } else {
+            const boughtFor = ns.stock.buyStock(stock, shares);
+            if (boughtFor > 0) {
+              ns.print(
+                `✓ LONG\t${stock}\t${ns.format.number(shares)} @ ${formatNumber(boughtFor)}`,
+              );
+              cancelOppositeOrders(stock, "L");
+              placeProtectiveStop(stock, shares, boughtFor, "L");
+            }
           }
         }
       }
@@ -100,20 +131,42 @@ export async function main(ns) {
         volatility <= stockVolatility) ||
         (!use4S && momentumSignal === "sell"))
     ) {
-      if (
-        playerMoney - moneyKeep >
-        ns.stock.getPurchaseCost(stock, minSharePercent, "S")
-      ) {
+      const minSharesShort = Math.max(1, Math.ceil(ns.stock.getMaxShares(stock) * (minSharePercent / 100)));
+      if (playerMoney - effectiveReserve > ns.stock.getPurchaseCost(stock, minSharesShort, "S")) {
         const shares = Math.min(
-          Math.floor((playerMoney - moneyKeep - commission) / askPrice),
+          Math.floor((playerMoney - effectiveReserve - commission) / askPrice),
           maxSharesShort,
         );
         if (shares > 0) {
-          const boughtFor = ns.stock.buyShort(stock, shares);
-          if (boughtFor > 0) {
-            ns.print(
-              `✓ SHORT\t${stock}\t${ns.format.number(shares)} @ ${formatNumber(boughtFor)}`,
+          if (use4S) {
+            const placed = tryPlaceLimitOrder(
+              stock,
+              shares,
+              askPrice * (1 - orderSlippage),
+              "Limit Sell Order",
+              "S",
             );
+            if (!placed) {
+              const boughtFor = ns.stock.buyShort(stock, shares);
+              if (boughtFor > 0) {
+                ns.print(
+                  `✓ SHORT\t${stock}\t${ns.format.number(shares)} @ ${formatNumber(boughtFor)}`,
+                );
+                cancelOppositeOrders(stock, "S");
+                placeProtectiveStop(stock, shares, boughtFor, "S");
+              }
+            } else {
+              cancelOppositeOrders(stock, "S");
+            }
+          } else {
+            const boughtFor = ns.stock.buyShort(stock, shares);
+            if (boughtFor > 0) {
+              ns.print(
+                `✓ SHORT\t${stock}\t${ns.format.number(shares)} @ ${formatNumber(boughtFor)}`,
+              );
+              cancelOppositeOrders(stock, "S");
+              placeProtectiveStop(stock, shares, boughtFor, "S");
+            }
           }
         }
       }
@@ -159,11 +212,34 @@ export async function main(ns) {
         (use4S && forecast < sellThreshold_Long) ||
         (!use4S && momentumSignal === "sell")
       ) {
-        const soldFor = ns.stock.sellStock(stock, position[0]);
-        if (soldFor > 0) {
-          ns.print(
-            `✗ SELL LONG\t${stock}\t${ns.format.number(position[0])} @ ${formatNumber(soldFor)} (profit: ${formatNumber(profit)})`,
+        if (use4S) {
+          const placed = tryPlaceLimitOrder(
+            stock,
+            position[0],
+            bidPrice * (1 - orderSlippage),
+            "Limit Sell Order",
+            "L",
           );
+          if (!placed) {
+            const soldFor = ns.stock.sellStock(stock, position[0]);
+            if (soldFor > 0)
+              ns.print(
+                `✗ SELL LONG\t${stock}\t${ns.format.number(position[0])} @ ${formatNumber(soldFor)} (profit: ${formatNumber(profit)})`,
+              );
+          } else {
+            // placed a sell limit — remove any protective stops
+            const orders = getMyOrders();
+            (orders[stock] || []).forEach((o) => {
+              if (o.position === "L" && o.type === "Stop Sell Order")
+                tryCancelOrder(stock, o.shares, o.price, o.type, o.position);
+            });
+          }
+        } else {
+          const soldFor = ns.stock.sellStock(stock, position[0]);
+          if (soldFor > 0)
+            ns.print(
+              `✗ SELL LONG\t${stock}\t${ns.format.number(position[0])} @ ${formatNumber(soldFor)} (profit: ${formatNumber(profit)})`,
+            );
         }
       }
     }
@@ -183,11 +259,34 @@ export async function main(ns) {
         (use4S && forecast > sellThreshold_Short) ||
         (!use4S && momentumSignal === "buy")
       ) {
-        const soldFor = ns.stock.sellShort(stock, position[2]);
-        if (soldFor > 0) {
-          ns.print(
-            `✗ SELL SHORT\t${stock}\t${ns.format.number(position[2])} @ ${formatNumber(soldFor)} (profit: ${formatNumber(profit)})`,
+        if (use4S) {
+          const placed = tryPlaceLimitOrder(
+            stock,
+            position[2],
+            askPrice * (1 + orderSlippage),
+            "Limit Buy Order",
+            "S",
           );
+          if (!placed) {
+            const soldFor = ns.stock.sellShort(stock, position[2]);
+            if (soldFor > 0)
+              ns.print(
+                `✗ SELL SHORT\t${stock}\t${ns.format.number(position[2])} @ ${formatNumber(soldFor)} (profit: ${formatNumber(profit)})`,
+              );
+          } else {
+            // remove protective stops for short
+            const orders = getMyOrders();
+            (orders[stock] || []).forEach((o) => {
+              if (o.position === "S" && o.type === "Stop Buy Order")
+                tryCancelOrder(stock, o.shares, o.price, o.type, o.position);
+            });
+          }
+        } else {
+          const soldFor = ns.stock.sellShort(stock, position[2]);
+          if (soldFor > 0)
+            ns.print(
+              `✗ SELL SHORT\t${stock}\t${ns.format.number(position[2])} @ ${formatNumber(soldFor)} (profit: ${formatNumber(profit)})`,
+            );
         }
       }
     }
@@ -215,6 +314,150 @@ export async function main(ns) {
     return totalValue;
   }
 
+  // Order helpers
+  function getMyOrders() {
+    try {
+      return ns.stock.getOrders();
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function hasOrder(stock, price, type, position) {
+    const orders = getMyOrders();
+    if (!orders[stock]) return false;
+    return orders[stock].some(
+      (o) => o.price === price && o.type === type && o.position === position,
+    );
+  }
+
+  function tryPlaceLimitOrder(
+    stock,
+    shares,
+    price,
+    orderTypeLabel,
+    positionType,
+  ) {
+    try {
+      // Avoid duplicate identical orders
+      if (hasOrder(stock, price, orderTypeLabel, positionType)) return true;
+      const ok = ns.stock.placeOrder(
+        stock,
+        Math.round(shares),
+        price,
+        orderTypeLabel,
+        positionType,
+      );
+      if (ok) {
+        const key = `${stock}|${price}|${orderTypeLabel}|${positionType}`;
+        orderRegistry.set(key, {
+          stock,
+          price,
+          type: orderTypeLabel,
+          pos: positionType,
+          ts: Date.now(),
+          shares: Math.round(shares),
+        });
+        ns.print(
+          `✦ ORDER PLACED ${orderTypeLabel} ${positionType}\t${stock}\t${ns.format.number(Math.round(shares))} @ ${formatNumber(price)}`,
+        );
+        return true;
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function tryCancelOrder(stock, shares, price, orderTypeLabel, positionType) {
+    try {
+      ns.stock.cancelOrder(
+        stock,
+        Math.round(shares),
+        price,
+        orderTypeLabel,
+        positionType,
+      );
+      const key = `${stock}|${price}|${orderTypeLabel}|${positionType}`;
+      orderRegistry.delete(key);
+      ns.print(
+        `✗ ORDER CANCELED ${orderTypeLabel} ${positionType}\t${stock}\t${ns.format.number(Math.round(shares))} @ ${formatNumber(price)}`,
+      );
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function reconcileOrders() {
+    // Remove registry entries that no longer show in actual orderbook, or that are stale
+    const orders = getMyOrders();
+    const now = Date.now();
+    for (const [key, meta] of Array.from(orderRegistry.entries())) {
+      const { stock, price, type, pos, ts } = meta;
+      const found = (orders[stock] || []).some(
+        (o) => o.price === price && o.type === type && o.position === pos,
+      );
+      if (!found || now - ts > orderTTL) {
+        orderRegistry.delete(key);
+        if (found && now - ts > orderTTL) {
+          // cancel it on exchange if still present and stale
+          tryCancelOrder(stock, meta.shares || 1, price, type, pos);
+        }
+      }
+    }
+  }
+
+  function cancelOppositeOrders(stock, keepPositionType) {
+    // Cancel any orders for stock that are opposite of keepPositionType ("L" or "S")
+    const orders = getMyOrders();
+    if (!orders[stock]) return;
+    for (const o of orders[stock]) {
+      if (o.position !== keepPositionType) {
+        tryCancelOrder(stock, o.shares, o.price, o.type, o.position);
+      }
+    }
+  }
+
+  function placeProtectiveStop(stock, shares, entryPrice, positionType) {
+    // For long: place Stop Sell at entryPrice * (1 - stopBuffer)
+    // For short: place Stop Buy at entryPrice * (1 + stopBuffer)
+    const stopPrice =
+      positionType === "L"
+        ? entryPrice * (1 - stopBuffer)
+        : entryPrice * (1 + stopBuffer);
+    const orderTypeLabel =
+      positionType === "L" ? "Stop Sell Order" : "Stop Buy Order";
+    // Ensure we don't place orders that would exceed the stock's max shares when combined with existing orders
+    const maxShares = ns.stock.getMaxShares(stock);
+    const orders = getMyOrders();
+    const outstanding = (orders[stock] || []).reduce((s, o) => s + (o.position === positionType ? o.shares : 0), 0);
+    let allowed = Math.max(0, maxShares - outstanding);
+    if (shares > allowed) {
+      ns.print(
+        `WARN: Reducing protective stop for ${stock} from ${ns.format.number(shares)} to ${ns.format.number(allowed)} because of max shares limit`,
+      );
+      shares = allowed;
+    }
+
+    if (shares <= 0) return false;
+
+    if (positionType === "S") {
+      // For short protective buy order we must ensure we have funds to cover buyback
+      const playerMoney = ns.getPlayer().money;
+      const effectiveReserve = Math.min(moneyKeep, Math.floor(playerMoney * moneyKeepPercent));
+      const costToCover = ns.stock.getPurchaseCost(stock, shares, "L");
+      if (playerMoney - effectiveReserve < costToCover) {
+        ns.print(
+          `WARN: Skipping protective Stop Buy for ${stock} @ ${formatNumber(stopPrice)} — insufficient funds to cover ${ns.format.number(shares)} shares (need ${formatNumber(costToCover)}, have ${formatNumber(playerMoney - effectiveReserve)})`,
+        );
+        return false;
+      }
+    }
+
+    return tryPlaceLimitOrder(stock, shares, stopPrice, orderTypeLabel, positionType);
+  }
+
   // Check API access
   const use4S = hasRequiredAccess();
   if (!use4S) {
@@ -237,9 +480,10 @@ export async function main(ns) {
   ns.print("");
 
   // Main loop
+  // price history store for momentum fallback (persist across ticks)
+  const priceHistory = {};
+  // Main loop
   while (true) {
-    // price history store for momentum fallback
-    const priceHistory = {};
 
     // Get stocks sorted by forecast strength (closest to 0 or 1)
     const symbols = ns.stock.getSymbols();
@@ -273,6 +517,9 @@ export async function main(ns) {
       // Look for new positions
       buyPositions(stock, use4S, priceHistory);
     }
+
+    // Reconcile tracked orders with exchange and remove stale ones
+    reconcileOrders();
 
     // Output status
     portfolioValue = getPortfolioValue();

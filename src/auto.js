@@ -9,7 +9,7 @@ export async function main(ns) {
     "profiler.js", // Analyze and rank servers
     "prep-servers.js", // Aggressively prep top targets (grow/weaken farm)
     "monitor.js", // Real-time dashboard
-    "Hacknet_manager.js", // Manage hacknet nodes
+    //    "Hacknet_manager.js", // Manage hacknet nodes - At bitnode 8, only earn by stock, hacknet is useless
     "purchase-server.js", // Manage cloud servers
     "stock-test.js", // Trade stocks
     "contract-solver.js", // Solve coding contracts
