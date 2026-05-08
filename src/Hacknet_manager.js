@@ -3,6 +3,7 @@ export async function main(ns) {
   const delayTime = 1000; // Hardcoded 1 second delay
   const bufferMultiplier = 2; // Keep 20% extra cash before buying
   const maxNodes = 31;
+  const maxRamBatch = 3; // 1 = x2, 2 = x4, 3 = x8
 
   while (true) {
     let ownedNodes = ns.hacknet.numNodes();
@@ -20,10 +21,12 @@ export async function main(ns) {
 
     // Step 2: Look at every single node we currently own and check upgrade prices.
     for (let i = 0; i < ownedNodes; i++) {
+      const ramUpgrade = getSmartRamUpgrade(ns, i, maxRamBatch);
+
       // Get the cost of upgrading Level (index 0), RAM (index 1), and Core (index 2)
       let upgrades = [
         ns.hacknet.getLevelUpgradeCost(i, 1),
-        ns.hacknet.getRamUpgradeCost(i, 1),
+        ramUpgrade.cost,
         ns.hacknet.getCoreUpgradeCost(i, 1),
       ];
 
@@ -57,8 +60,11 @@ export async function main(ns) {
       ns.hacknet.upgradeLevel(nodeIndex, 1);
       ns.print(`Upgraded Level on Node ${nodeIndex}`);
     } else if (upgradeType === 1) {
-      ns.hacknet.upgradeRam(nodeIndex, 1);
-      ns.print(`Upgraded RAM on Node ${nodeIndex}`);
+      const ramUpgrade = getSmartRamUpgrade(ns, nodeIndex, maxRamBatch);
+      ns.hacknet.upgradeRam(nodeIndex, ramUpgrade.steps);
+      ns.print(
+        `Upgraded RAM on Node ${nodeIndex} by ${ramUpgrade.steps} step(s)`,
+      );
     } else if (upgradeType === 2) {
       ns.hacknet.upgradeCore(nodeIndex, 1);
       ns.print(`Upgraded Core on Node ${nodeIndex}`);
@@ -74,4 +80,28 @@ async function waitForMoney(ns, targetMoney, delayTime, bufferMultiplier) {
   while (ns.getServerMoneyAvailable("home") < requiredMoney) {
     await ns.sleep(delayTime);
   }
+}
+
+function getSmartRamUpgrade(ns, nodeIndex, maxRamBatch) {
+  const baseCost = ns.hacknet.getRamUpgradeCost(nodeIndex, 1);
+  let steps = 1;
+
+  for (
+    let candidateSteps = maxRamBatch;
+    candidateSteps >= 2;
+    candidateSteps--
+  ) {
+    const candidateCost = ns.hacknet.getRamUpgradeCost(
+      nodeIndex,
+      candidateSteps,
+    );
+    const efficiencyGate = candidateSteps === 2 ? 4 : 8;
+
+    if (candidateCost <= baseCost * efficiencyGate) {
+      steps = candidateSteps;
+      return { cost: candidateCost, steps };
+    }
+  }
+
+  return { cost: baseCost, steps };
 }

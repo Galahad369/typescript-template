@@ -2,6 +2,7 @@
 export async function main(ns) {
   const controlServer = "home";
   const sleepTime = 30000;
+  const minimumRamForSupportScripts = 64;
   // Keep this supervisor focused on scripts that do not depend on Source-Files.
   const autoScripts = [
     "root-deploy-monitor.js", // Root new servers and deploy hack.js
@@ -15,7 +16,16 @@ export async function main(ns) {
   ];
 
   function ensureAutoScripts() {
+    const homeRam = ns.getServerMaxRam(controlServer);
+
     for (const script of autoScripts) {
+      if (
+        homeRam < minimumRamForSupportScripts &&
+        ["root-deploy-monitor.js", "profiler.js", "monitor.js"].includes(script)
+      ) {
+        continue;
+      }
+
       if (!ns.fileExists(script, controlServer)) {
         ns.print(`WARN: ${script} not found on home`);
         continue;
