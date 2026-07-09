@@ -1,0 +1,10 @@
+# Node / TypeScript
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.DS_Store
+.idea/
+.vscode/
+*.log
+npm-debug.log*
