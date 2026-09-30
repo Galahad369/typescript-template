@@ -8,3 +8,17 @@ build/
 .vscode/
 *.log
 npm-debug.log*
+
+# Private configuration and signing material
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials*.json
+secrets/
+.private-output/
